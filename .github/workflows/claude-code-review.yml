@@ -3,25 +3,22 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/workflows/**"
+      - "!.github/workflows/claude-code-review.yml"
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: read
       id-token: write
 
@@ -31,14 +28,70 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Fetch base commit
+        run: git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install code-review-graph
+        run: pip install code-review-graph==2.1.0
+
+      - name: Restore graph cache
+        id: cache-graph
+        uses: actions/cache@v4
+        with:
+          path: .code-review-graph
+          key: code-review-graph-${{ github.event.pull_request.base.sha }}
+          restore-keys: |
+            code-review-graph-
+
+      - name: Build or update graph
+        run: |
+          if [ "${{ steps.cache-graph.outputs.cache-hit }}" = "true" ]; then
+            code-review-graph update
+          else
+            code-review-graph build
+          fi
+
+      - name: Create MCP config
+        run: |
+          cat > /tmp/mcp-config.json << 'EOF'
+          {
+            "mcpServers": {
+              "code-review-graph": {
+                "command": "code-review-graph",
+                "args": ["serve"]
+              }
+            }
+          }
+          EOF
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          claude_args: |
+            --mcp-config /tmp/mcp-config.json
+            --allowedTools mcp__code-review-graph__*
+          prompt: |
+            Review the changes in this pull request using the code-review-graph MCP tools.
 
+            Use the review_changes workflow: first detect_changes_tool with base "${{ github.event.pull_request.base.sha }}", then get_impact_radius_tool for affected files, then get_review_context_tool for token-efficient context.
+
+            Focus especially on:
+            1. Cross-crate/cross-contract boundary changes
+            2. Solidity contract changes and their Rust ethexe interactions
+            3. Missing test coverage for impacted functions
+            4. Public API changes and their downstream blast radius
+
+            Structure your review as:
+            - **Summary**: One paragraph on change scope
+            - **Blast Radius**: Affected crates/contracts beyond directly changed files
+            - **High-Risk Items**: Ordered by risk, with specific concerns
+            - **Recommendations**: Concrete suggestions referencing specific functions/files
+
+            Do NOT repeat the full diff. Use structural analysis to provide insight the diff alone cannot.
