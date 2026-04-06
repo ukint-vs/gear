@@ -91,16 +91,23 @@ jobs:
             - Always set max_depth=1 (not 2) to avoid transitive explosion
             - Never call get_review_context_tool with include_source=true or max_lines_per_file > 50
 
-            Focus on:
-            1. Cross-crate boundary changes and public API impact
-            2. Solidity/Rust ethexe interaction changes
-            3. Missing test coverage for impacted functions
-            4. Breaking changes to wire formats, error codes, or serialization
+            After getting the graph context, READ the source of every changed file and its direct callers/dependents.
+            Your primary job is verifying logical correctness across related functionality:
+
+            1. Do callers still work correctly with the changed behavior? Read them and check.
+            2. Are assumptions in related code invalidated by this change? (e.g., error codes, return types, state invariants)
+            3. Are there consistency violations? (e.g., one function updated but a sibling left stale)
+            4. Do tests actually cover the changed logic paths? If tests exist, read them.
+
+            Also flag:
+            - Breaking changes to public APIs, wire formats, or serialization
+            - Cross-crate boundary issues (Rust) and Solidity/Rust ethexe interactions
+            - Missing error handling or edge cases introduced by the change
 
             Structure your review as:
-            - **Summary**: One paragraph on change scope
-            - **Blast Radius**: Affected crates/contracts beyond directly changed files
-            - **High-Risk Items**: Ordered by risk, with specific concerns
-            - **Recommendations**: Concrete suggestions referencing specific functions/files
+            - **Summary**: One paragraph on what changed and why it matters
+            - **Correctness**: Issues found by reading callers and related code
+            - **Blast Radius**: What breaks or needs updating beyond the changed files
+            - **Recommendations**: Concrete fixes referencing specific functions/files
 
             Be concise. Do NOT repeat the diff. Post your review as a PR comment.
