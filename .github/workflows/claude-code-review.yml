@@ -109,4 +109,5 @@ jobs:
             - **Blast Radius**: What breaks or needs updating beyond the changed files
             - **Recommendations**: Concrete fixes referencing specific functions/files
 
-            Be concise. Do NOT repeat the diff. Post your review as a PR comment.
+            Be concise. Do NOT repeat the diff.
+            Post your review as a PR comment using your built-in GitHub comment tools. Do NOT use Bash or gh CLI to post.
