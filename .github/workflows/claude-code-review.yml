@@ -103,11 +103,14 @@ jobs:
             - Cross-crate boundary issues (Rust) and Solidity/Rust ethexe interactions
             - Missing error handling or edge cases introduced by the change
 
-            Structure your review as:
+            How to post your review:
+            1. For line-specific issues, use the create_inline_comment tool to post inline comments on the exact lines.
+               Use ```suggestion blocks for concrete code fixes. Set confirmed=true to post immediately.
+            2. After all inline comments, post a summary as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"
+
+            Summary format:
             - **Summary**: One paragraph on what changed and why it matters
             - **Correctness**: Issues found by reading callers and related code
             - **Blast Radius**: What breaks or needs updating beyond the changed files
-            - **Recommendations**: Concrete fixes referencing specific functions/files
 
-            Be concise. Do NOT repeat the diff.
-            At the end, post your review as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<your review>"
+            Be concise. Do NOT repeat the diff. Prefer inline comments with suggestions over listing issues in the summary.
