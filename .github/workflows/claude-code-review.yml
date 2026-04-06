@@ -76,7 +76,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
           show_full_output: true
-          claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools "Bash(gh pr comment:*),Bash(gh pr review:*)"'
+          claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools "Bash(gh *)"'
           prompt: |
             You are reviewing a pull request in gear — a 114-crate Rust monorepo with Solidity contracts in ethexe/.
             This is a large codebase. To avoid token limits, follow these rules strictly:
@@ -110,4 +110,4 @@ jobs:
             - **Recommendations**: Concrete fixes referencing specific functions/files
 
             Be concise. Do NOT repeat the diff.
-            Post your review as a PR comment using your built-in GitHub comment tools. Do NOT use Bash or gh CLI to post.
+            At the end, post your review as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<your review>"
