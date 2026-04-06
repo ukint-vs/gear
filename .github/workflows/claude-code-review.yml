@@ -74,20 +74,28 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true
+          use_sticky_comment: true
           claude_args: |
             --mcp-config /tmp/mcp-config.json
             --allowedTools mcp__code-review-graph__detect_changes_tool,mcp__code-review-graph__get_impact_radius_tool,mcp__code-review-graph__get_review_context_tool,mcp__code-review-graph__query_graph_tool,mcp__code-review-graph__semantic_search_nodes_tool,mcp__code-review-graph__list_graph_stats_tool,mcp__code-review-graph__get_architecture_overview_tool
           prompt: |
-            Review the changes in this pull request using the code-review-graph MCP tools.
+            You are reviewing a pull request in gear — a 114-crate Rust monorepo with Solidity contracts in ethexe/.
+            This is a large codebase. To avoid token limits, follow these rules strictly:
 
-            Use the review_changes workflow: first detect_changes_tool with base "${{ github.event.pull_request.base.sha }}", then get_impact_radius_tool for affected files, then get_review_context_tool for token-efficient context.
+            Step 1: Call detect_changes_tool with base "${{ github.event.pull_request.base.sha }}", include_source=false, max_depth=1.
+            Step 2: Call get_review_context_tool with base "${{ github.event.pull_request.base.sha }}", include_source=false, max_depth=1.
+            Step 3: If you need source for specific high-risk functions, read those files directly — do NOT use include_source=true on the graph tools.
 
-            Focus especially on:
-            1. Cross-crate/cross-contract boundary changes
-            2. Solidity contract changes and their Rust ethexe interactions
+            IMPORTANT parameter rules for this large repo:
+            - Always set include_source=false on detect_changes_tool and get_review_context_tool
+            - Always set max_depth=1 (not 2) to avoid transitive explosion
+            - Never call get_review_context_tool with include_source=true or max_lines_per_file > 50
+
+            Focus on:
+            1. Cross-crate boundary changes and public API impact
+            2. Solidity/Rust ethexe interaction changes
             3. Missing test coverage for impacted functions
-            4. Public API changes and their downstream blast radius
+            4. Breaking changes to wire formats, error codes, or serialization
 
             Structure your review as:
             - **Summary**: One paragraph on change scope
@@ -95,4 +103,4 @@ jobs:
             - **High-Risk Items**: Ordered by risk, with specific concerns
             - **Recommendations**: Concrete suggestions referencing specific functions/files
 
-            Do NOT repeat the full diff. Use structural analysis to provide insight the diff alone cannot.
+            Be concise. Do NOT repeat the diff. Post your review as a PR comment.
