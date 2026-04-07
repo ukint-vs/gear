@@ -18,20 +18,30 @@
 
 use jsonrpsee::types::ErrorObject;
 
-// TODO #4364: https://github.com/gear-tech/gear/issues/4364
+// JSON-RPC server error codes (-32000..-32099 reserved for implementation).
+// -32000/-32001 used by jsonrpsee itself, start at -32050.
+const DB_ERROR: i32 = -32050;
+const RUNTIME_ERROR: i32 = -32051;
+const BAD_REQUEST_ERROR: i32 = -32052;
+const INTERNAL_ERROR: i32 = -32053;
+const NOT_FOUND_ERROR: i32 = -32054;
 
 pub fn db(err: &'static str) -> ErrorObject<'static> {
-    ErrorObject::owned(8000, "Database error", Some(err))
+    ErrorObject::owned(DB_ERROR, "Database error", Some(err))
 }
 
 pub fn runtime(err: impl ToString) -> ErrorObject<'static> {
-    ErrorObject::owned(8000, "Runtime error", Some(err.to_string()))
+    ErrorObject::owned(RUNTIME_ERROR, "Runtime error", Some(err.to_string()))
 }
 
 pub fn bad_request(err: impl ToString) -> ErrorObject<'static> {
-    ErrorObject::owned(8000, "Bad request", Some(err.to_string()))
+    ErrorObject::owned(BAD_REQUEST_ERROR, "Bad request", Some(err.to_string()))
 }
 
 pub fn internal() -> ErrorObject<'static> {
-    ErrorObject::owned(8000, "Internal error", None::<&str>)
+    ErrorObject::owned(INTERNAL_ERROR, "Internal error", None::<&str>)
+}
+
+pub fn not_found(entity: impl ToString) -> ErrorObject<'static> {
+    ErrorObject::owned(NOT_FOUND_ERROR, "Not found", Some(entity.to_string()))
 }
