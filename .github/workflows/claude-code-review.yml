@@ -1,0 +1,114 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/workflows/**"
+      - "!.github/workflows/claude-code-review.yml"
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch base commit
+        run: git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install code-review-graph
+        run: pip install code-review-graph==2.1.0
+
+      - name: Restore graph cache
+        id: cache-graph
+        uses: actions/cache@v4
+        with:
+          path: .code-review-graph
+          key: code-review-graph-${{ github.event.pull_request.base.sha }}
+          restore-keys: |
+            code-review-graph-
+
+      - name: Build or update graph
+        run: |
+          if [ "${{ steps.cache-graph.outputs.cache-hit }}" = "true" ]; then
+            code-review-graph update
+          else
+            code-review-graph build
+          fi
+
+      - name: Create MCP config
+        run: |
+          cat > /tmp/mcp-config.json << 'EOF'
+          {
+            "mcpServers": {
+              "code-review-graph": {
+                "command": "code-review-graph",
+                "args": ["serve"]
+              }
+            }
+          }
+          EOF
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools Bash'
+          prompt: |
+            You are reviewing a pull request in gear — a 114-crate Rust monorepo with Solidity contracts in ethexe/.
+            This is a large codebase. To avoid token limits, follow these rules strictly:
+
+            Step 1: Call detect_changes_tool with base "${{ github.event.pull_request.base.sha }}", include_source=false, max_depth=1.
+            Step 2: Call get_review_context_tool with base "${{ github.event.pull_request.base.sha }}", include_source=false, max_depth=1.
+            Step 3: If you need source for specific high-risk functions, read those files directly — do NOT use include_source=true on the graph tools.
+
+            IMPORTANT parameter rules for this large repo:
+            - Always set include_source=false on detect_changes_tool and get_review_context_tool
+            - Always set max_depth=1 (not 2) to avoid transitive explosion
+            - Never call get_review_context_tool with include_source=true or max_lines_per_file > 50
+
+            After getting the graph context, READ the source of every changed file and its direct callers/dependents.
+            Your primary job is verifying logical correctness across related functionality:
+
+            1. Do callers still work correctly with the changed behavior? Read them and check.
+            2. Are assumptions in related code invalidated by this change? (e.g., error codes, return types, state invariants)
+            3. Are there consistency violations? (e.g., one function updated but a sibling left stale)
+            4. Do tests actually cover the changed logic paths? If tests exist, read them.
+
+            Also flag:
+            - Breaking changes to public APIs, wire formats, or serialization
+            - Cross-crate boundary issues (Rust) and Solidity/Rust ethexe interactions
+            - Missing error handling or edge cases introduced by the change
+
+            How to post your review:
+            1. For line-specific issues, use the create_inline_comment tool to post inline comments on the exact lines.
+               Use ```suggestion blocks for concrete code fixes. Set confirmed=true to post immediately.
+            2. After all inline comments, post a summary as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"
+
+            Summary format:
+            - **Summary**: One paragraph on what changed and why it matters
+            - **Correctness**: Issues found by reading callers and related code
+            - **Blast Radius**: What breaks or needs updating beyond the changed files
+
+            Be concise. Do NOT repeat the diff. Prefer inline comments with suggestions over listing issues in the summary.
