@@ -27,8 +27,12 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Fetch base commit
-        run: git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
+      - name: Fetch base and previous commits
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
+          if [ "${{ github.event.action }}" = "synchronize" ] && [ -n "${{ github.event.before }}" ]; then
+            git fetch origin ${{ github.event.before }} --depth=1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,8 +72,30 @@ jobs:
           }
           EOF
 
-      - name: Run Claude Code Review
-        id: claude-review
+      - name: Detect review mode
+        id: review-mode
+        run: |
+          if [ "${{ github.event.action }}" = "synchronize" ] && [ -n "${{ github.event.before }}" ]; then
+            echo "mode=delta" >> "$GITHUB_OUTPUT"
+            echo "diff_base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "diff_base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch previous review context
+        id: prev-review
+        if: steps.review-mode.outputs.mode == 'delta'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]")] | last | .body // "No previous review found."' \
+            > /tmp/prev-review.md 2>/dev/null || echo "No previous review found." > /tmp/prev-review.md
+
+      - name: Run Claude Code Review (full)
+        id: claude-review-full
+        if: steps.review-mode.outputs.mode == 'full'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -111,3 +137,52 @@ jobs:
             - **Blast Radius**: What breaks or needs updating beyond the changed files
 
             Be concise. Do NOT repeat the diff. Prefer inline comments with suggestions over listing issues in the summary.
+
+      - name: Run Claude Code Review (delta)
+        id: claude-review-delta
+        if: steps.review-mode.outputs.mode == 'delta'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools Bash'
+          prompt: |
+            You are doing a DELTA review of new commits pushed to a pull request in gear — a 114-crate Rust monorepo.
+            Only review changes between ${{ github.event.before }} (previous head) and ${{ github.sha }} (current head).
+            Do NOT re-review code that was already in the PR before this push.
+
+            Step 1: Call detect_changes_tool with base "${{ github.event.before }}", include_source=false, max_depth=1.
+            Step 2: Call get_review_context_tool with base "${{ github.event.before }}", include_source=false, max_depth=1.
+            Step 3: If you need source for specific high-risk functions, read those files directly.
+
+            IMPORTANT parameter rules for this large repo:
+            - Always set include_source=false on detect_changes_tool and get_review_context_tool
+            - Always set max_depth=1 (not 2) to avoid transitive explosion
+            - Never call get_review_context_tool with include_source=true or max_lines_per_file > 50
+
+            IMPORTANT: Before starting, read /tmp/prev-review.md — it contains your previous review of this PR.
+            Use it as context: do not repeat findings already covered there.
+
+            After getting the graph context, READ the source of changed files and their direct callers.
+            Focus on:
+            1. Do the new changes address or conflict with issues raised in your previous review?
+            2. Do the new changes introduce NEW correctness issues?
+            3. Are there consistency violations between old and new code in the PR?
+            4. Do callers still work correctly with the new behavior?
+
+            Also flag:
+            - Breaking changes to public APIs, wire formats, or serialization
+            - Cross-crate boundary issues (Rust) and Solidity/Rust ethexe interactions
+            - Missing error handling or edge cases introduced by the change
+
+            How to post your review:
+            1. For line-specific issues, use the create_inline_comment tool to post inline comments on the exact lines.
+               Use ```suggestion blocks for concrete code fixes. Set confirmed=true to post immediately.
+            2. After all inline comments, post a summary as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"
+
+            Summary format:
+            - **Delta Review** (reviewing commits ${{ github.event.before }}...${{ github.sha }})
+            - **New Changes**: What these commits add/modify
+            - **Previous Issues**: Which issues from the previous review are addressed/unaddressed
+            - **New Findings**: New correctness issues in the delta
+
+            Be concise. Do NOT re-review unchanged code. Focus only on what's new.
