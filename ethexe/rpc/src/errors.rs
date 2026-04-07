@@ -19,11 +19,12 @@
 use jsonrpsee::types::ErrorObject;
 
 // JSON-RPC custom server error codes (ref: https://github.com/gear-tech/gear/issues/4364)
-const DB_ERROR: i32 = -32000;
-const RUNTIME_ERROR: i32 = -32001;
-const BAD_REQUEST_ERROR: i32 = -32002;
-const INTERNAL_ERROR: i32 = -32003;
-const NOT_FOUND_ERROR: i32 = -32004;
+// Range -32000/-32001 reserved by jsonrpsee (CALL_EXECUTION_FAILED / UNKNOWN_ERROR).
+const DB_ERROR: i32 = -32050;
+const RUNTIME_ERROR: i32 = -32051;
+const BAD_REQUEST_ERROR: i32 = -32052;
+const INTERNAL_ERROR: i32 = -32053;
+const NOT_FOUND_ERROR: i32 = -32054;
 
 pub fn db(err: &'static str) -> ErrorObject<'static> {
     ErrorObject::owned(DB_ERROR, "Database error", Some(err))
