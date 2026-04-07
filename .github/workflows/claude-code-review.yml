@@ -95,8 +95,18 @@ jobs:
             Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
             Then post summary: gh pr comment ${{ github.event.pull_request.number }} --body "<!-- claude-review sha:${{ github.event.pull_request.head.sha }} -->\n<body>"
 
-            Summary: 3-5 sentences max. Only issues NOT already covered by inline comments.
-            Keep it SHORT. Most detail belongs in inline comments, not the summary.
+            Summary format (use exactly this structure):
+            ## Summary
+            One sentence: what the PR does.
+
+            ## Findings
+            | Severity | Finding | Suggestion |
+            |----------|---------|------------|
+            | critical/high/medium/low | What's wrong (no file paths or line numbers) | What to do about it |
+
+            If no findings, write "No issues found."
+            Do NOT mention file paths or line numbers in the summary — those belong in inline comments only.
+            Keep it SHORT. Max 5 rows in the table.
 
   delta-review:
     if: >-
@@ -220,5 +230,20 @@ jobs:
             Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
             Then post summary: gh pr comment ${{ steps.pr.outputs.number }} --body "<!-- claude-review sha:${{ steps.pr.outputs.head_sha }} -->\n<body>"
 
-            Summary: 3-5 sentences max. State what changed since last review, which previous issues are fixed/open, and new issues.
-            Keep it SHORT. Detail belongs in inline comments.
+            Summary format (use exactly this structure):
+            ## Delta Review
+            One sentence: what changed since last review.
+
+            ## Previous Issues
+            | Status | Finding |
+            |--------|---------|
+            | fixed/open | One-line description from previous review |
+
+            ## New Findings
+            | Severity | Finding | Suggestion |
+            |----------|---------|------------|
+            | critical/high/medium/low | What's wrong (no file paths or line numbers) | What to do about it |
+
+            If no new findings, write "No new issues."
+            Do NOT mention file paths or line numbers in the summary — those belong in inline comments only.
+            Keep it SHORT. Max 5 rows per table.
