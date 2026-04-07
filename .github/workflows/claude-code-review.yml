@@ -92,7 +92,8 @@ jobs:
             - Tests cover changed paths
             - No breaking API/wire format/serialization changes
 
-            Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
+            Post line-specific findings as PR review comments using gh CLI:
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments -f body="comment" -f commit_id="${{ github.event.pull_request.head.sha }}" -f path="file" -F line=N -f side=RIGHT
             Then post summary: gh pr comment ${{ github.event.pull_request.number }} --body "<!-- claude-review sha:${{ github.event.pull_request.head.sha }} -->\n<body>"
 
             Summary format (use exactly this structure):
@@ -227,7 +228,8 @@ jobs:
             - Any NEW correctness issues?
             - Callers still work with changed behavior?
 
-            Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
+            Post line-specific findings as PR review comments using gh CLI:
+            gh api repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/comments -f body="comment" -f commit_id="${{ steps.pr.outputs.head_sha }}" -f path="file" -F line=N -f side=RIGHT
             Then post summary: gh pr comment ${{ steps.pr.outputs.number }} --body "<!-- claude-review sha:${{ steps.pr.outputs.head_sha }} -->\n<body>"
 
             Summary format (use exactly this structure):
