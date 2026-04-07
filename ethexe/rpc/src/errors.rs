@@ -19,11 +19,12 @@
 use jsonrpsee::types::ErrorObject;
 
 // JSON-RPC server error codes (-32000..-32099 reserved for implementation).
-// -32000/-32001 used by jsonrpsee itself, start at -32050.
+// Start at -32050 to avoid any reserved jsonrpsee internals.
 const DB_ERROR: i32 = -32050;
 const RUNTIME_ERROR: i32 = -32051;
 const BAD_REQUEST_ERROR: i32 = -32052;
 const INTERNAL_ERROR: i32 = -32053;
+const NOT_FOUND_ERROR: i32 = -32054;
 
 pub fn db(err: &'static str) -> ErrorObject<'static> {
     ErrorObject::owned(DB_ERROR, "Database error", Some(err))
@@ -39,4 +40,8 @@ pub fn bad_request(err: impl ToString) -> ErrorObject<'static> {
 
 pub fn internal() -> ErrorObject<'static> {
     ErrorObject::owned(INTERNAL_ERROR, "Internal error", None::<&str>)
+}
+
+pub fn not_found(entity: impl ToString) -> ErrorObject<'static> {
+    ErrorObject::owned(NOT_FOUND_ERROR, "Not found", Some(entity.to_string()))
 }
