@@ -74,16 +74,19 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools Bash'
           prompt: |
-            Review PR in gear (114-crate Rust monorepo, Solidity contracts in ethexe/).
+            Review PR #${{ github.event.pull_request.number }} in gear (114-crate Rust monorepo, Solidity contracts in ethexe/).
 
-            Read .gemini/styleguide.md for review priorities and anti-noise rules. Follow them strictly.
+            FIRST: Run `git diff ${{ github.event.pull_request.base.sha }} --name-only` to see exactly which files changed.
+            Only review those files. Do NOT review files that are not in the diff.
 
-            Graph tools (use include_source=false, max_depth=1 on ALL calls — large repo):
+            Read .gemini/styleguide.md for review priorities and anti-noise rules.
+
+            Graph tools (ALWAYS use include_source=false, max_depth=1 — large repo):
             1. detect_changes_tool base="${{ github.event.pull_request.base.sha }}"
             2. get_review_context_tool base="${{ github.event.pull_request.base.sha }}"
             3. Read source of high-risk functions directly if needed.
 
-            Then READ changed files + direct callers. Verify:
+            Then READ each changed file + its direct callers. Verify:
             - Callers still work with changed behavior
             - No stale assumptions (error codes, return types, invariants)
             - Tests cover changed paths
@@ -92,7 +95,7 @@ jobs:
             Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
             Then post summary: gh pr comment ${{ github.event.pull_request.number }} --body "<!-- claude-review sha:${{ github.event.pull_request.head.sha }} -->\n<body>"
 
-            Summary: 3-5 sentences max. One line what changed, then only list issues NOT already covered by inline comments.
+            Summary: 3-5 sentences max. Only issues NOT already covered by inline comments.
             Keep it SHORT. Most detail belongs in inline comments, not the summary.
 
   delta-review:
@@ -199,14 +202,17 @@ jobs:
             Delta review of new commits on PR #${{ steps.pr.outputs.number }} in gear (114-crate Rust monorepo).
             Diff: ${{ steps.last-review.outputs.sha }}..${{ steps.pr.outputs.head_sha }}. Do NOT re-review old code.
 
-            Read /tmp/prev-review.md first — your previous review. Do not repeat covered findings.
+            FIRST: Run `git diff ${{ steps.last-review.outputs.sha }} --name-only` to see exactly which files changed.
+            Only review those files. Do NOT review files that are not in the diff.
 
-            Graph tools (use include_source=false, max_depth=1 on ALL calls):
+            Read /tmp/prev-review.md — your previous review. Do not repeat covered findings.
+
+            Graph tools (ALWAYS use include_source=false, max_depth=1 — large repo):
             1. detect_changes_tool base="${{ steps.last-review.outputs.sha }}"
             2. get_review_context_tool base="${{ steps.last-review.outputs.sha }}"
             3. Read source of high-risk functions directly if needed.
 
-            Then READ changed files + direct callers. Check:
+            Then READ each changed file + its direct callers. Check:
             - Do new changes address previous review issues?
             - Any NEW correctness issues?
             - Callers still work with changed behavior?
