@@ -108,6 +108,7 @@ jobs:
             If no findings, write "No issues found."
             Do NOT mention file paths or line numbers in the summary — those belong in inline comments only.
             Keep it SHORT. Max 5 rows in the table.
+            At the end of the summary, add: "\n---\n> After pushing new commits, comment `/review-delta` to get an incremental review."
 
   delta-review:
     if: >-
