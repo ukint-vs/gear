@@ -2,24 +2,24 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - ".github/workflows/**"
-
-concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+    types: [labeled]
+  issue_comment:
+    types: [created]
 
 jobs:
-  claude-review:
+  full-review:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.label.name == 'A0-pleasereview'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
       issues: read
       id-token: write
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout repository
@@ -27,12 +27,8 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Fetch base and previous commits
-        run: |
-          git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
-          if [ "${{ github.event.action }}" = "synchronize" ] && [ -n "${{ github.event.before }}" ]; then
-            git fetch origin ${{ github.event.before }} --depth=1
-          fi
+      - name: Fetch base commit
+        run: git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -72,117 +68,151 @@ jobs:
           }
           EOF
 
-      - name: Detect review mode
-        id: review-mode
-        run: |
-          if [ "${{ github.event.action }}" = "synchronize" ] && [ -n "${{ github.event.before }}" ]; then
-            echo "mode=delta" >> "$GITHUB_OUTPUT"
-            echo "diff_base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=full" >> "$GITHUB_OUTPUT"
-            echo "diff_base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools Bash'
+          prompt: |
+            Review PR in gear (114-crate Rust monorepo, Solidity contracts in ethexe/).
 
-      - name: Fetch previous review context
-        id: prev-review
-        if: steps.review-mode.outputs.mode == 'delta'
+            Read .gemini/styleguide.md for review priorities and anti-noise rules. Follow them strictly.
+
+            Graph tools (use include_source=false, max_depth=1 on ALL calls — large repo):
+            1. detect_changes_tool base="${{ github.event.pull_request.base.sha }}"
+            2. get_review_context_tool base="${{ github.event.pull_request.base.sha }}"
+            3. Read source of high-risk functions directly if needed.
+
+            Then READ changed files + direct callers. Verify:
+            - Callers still work with changed behavior
+            - No stale assumptions (error codes, return types, invariants)
+            - Tests cover changed paths
+            - No breaking API/wire format/serialization changes
+
+            Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
+            Then post summary: gh pr comment ${{ github.event.pull_request.number }} --body "<!-- claude-review sha:${{ github.event.pull_request.head.sha }} -->\n<body>"
+
+            Summary: 3-5 sentences max. One line what changed, then only list issues NOT already covered by inline comments.
+            Keep it SHORT. Most detail belongs in inline comments, not the summary.
+
+  delta-review:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/review-delta')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    concurrency:
+      group: claude-review-${{ github.event.issue.number }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Get PR details
+        id: pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
-            --jq '[.[] | select(.user.login == "claude[bot]")] | last | .body // "No previous review found."' \
+          PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}")
+          echo "head_sha=$(echo "$PR_JSON" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(echo "$PR_JSON" | jq -r '.head.ref')" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(echo "$PR_JSON" | jq -r '.base.sha')" >> "$GITHUB_OUTPUT"
+          echo "number=$(echo "$PR_JSON" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+
+      - name: Get last reviewed SHA
+        id: last-review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LAST_SHA=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]" and (.body | contains("<!-- claude-review sha:")))] | last | .body | capture("<!-- claude-review sha:(?<sha>[a-f0-9]+) -->") | .sha // empty' 2>/dev/null || true)
+          if [ -n "$LAST_SHA" ]; then
+            echo "sha=$LAST_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${{ steps.pr.outputs.base_sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 1
+
+      - name: Fetch delta base commit
+        run: git fetch origin ${{ steps.last-review.outputs.sha }} --depth=1
+
+      - name: Fetch previous review content
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            --jq '[.[] | select(.user.login == "claude[bot]" and (.body | contains("<!-- claude-review sha:")))] | last | .body // "No previous review found."' \
             > /tmp/prev-review.md 2>/dev/null || echo "No previous review found." > /tmp/prev-review.md
 
-      - name: Run Claude Code Review (full)
-        id: claude-review-full
-        if: steps.review-mode.outputs.mode == 'full'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install code-review-graph
+        run: pip install code-review-graph==2.1.0
+
+      - name: Restore graph cache
+        id: cache-graph
+        uses: actions/cache@v4
+        with:
+          path: .code-review-graph
+          key: code-review-graph-${{ steps.pr.outputs.base_sha }}
+          restore-keys: |
+            code-review-graph-
+
+      - name: Build or update graph
+        run: |
+          if [ "${{ steps.cache-graph.outputs.cache-hit }}" = "true" ]; then
+            code-review-graph update
+          else
+            code-review-graph build
+          fi
+
+      - name: Create MCP config
+        run: |
+          cat > /tmp/mcp-config.json << 'EOF'
+          {
+            "mcpServers": {
+              "code-review-graph": {
+                "command": "code-review-graph",
+                "args": ["serve"]
+              }
+            }
+          }
+          EOF
+
+      - name: Run Claude Delta Review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools Bash'
           prompt: |
-            You are reviewing a pull request in gear — a 114-crate Rust monorepo with Solidity contracts in ethexe/.
-            This is a large codebase. To avoid token limits, follow these rules strictly:
+            Delta review of new commits on PR #${{ steps.pr.outputs.number }} in gear (114-crate Rust monorepo).
+            Diff: ${{ steps.last-review.outputs.sha }}..${{ steps.pr.outputs.head_sha }}. Do NOT re-review old code.
 
-            Step 1: Call detect_changes_tool with base "${{ github.event.pull_request.base.sha }}", include_source=false, max_depth=1.
-            Step 2: Call get_review_context_tool with base "${{ github.event.pull_request.base.sha }}", include_source=false, max_depth=1.
-            Step 3: If you need source for specific high-risk functions, read those files directly — do NOT use include_source=true on the graph tools.
+            Read /tmp/prev-review.md first — your previous review. Do not repeat covered findings.
 
-            IMPORTANT parameter rules for this large repo:
-            - Always set include_source=false on detect_changes_tool and get_review_context_tool
-            - Always set max_depth=1 (not 2) to avoid transitive explosion
-            - Never call get_review_context_tool with include_source=true or max_lines_per_file > 50
+            Graph tools (use include_source=false, max_depth=1 on ALL calls):
+            1. detect_changes_tool base="${{ steps.last-review.outputs.sha }}"
+            2. get_review_context_tool base="${{ steps.last-review.outputs.sha }}"
+            3. Read source of high-risk functions directly if needed.
 
-            After getting the graph context, READ the source of every changed file and its direct callers/dependents.
-            Your primary job is verifying logical correctness across related functionality:
+            Then READ changed files + direct callers. Check:
+            - Do new changes address previous review issues?
+            - Any NEW correctness issues?
+            - Callers still work with changed behavior?
 
-            1. Do callers still work correctly with the changed behavior? Read them and check.
-            2. Are assumptions in related code invalidated by this change? (e.g., error codes, return types, state invariants)
-            3. Are there consistency violations? (e.g., one function updated but a sibling left stale)
-            4. Do tests actually cover the changed logic paths? If tests exist, read them.
+            Post findings as inline comments (create_inline_comment, confirmed=true) with ```suggestion blocks.
+            Then post summary: gh pr comment ${{ steps.pr.outputs.number }} --body "<!-- claude-review sha:${{ steps.pr.outputs.head_sha }} -->\n<body>"
 
-            Also flag:
-            - Breaking changes to public APIs, wire formats, or serialization
-            - Cross-crate boundary issues (Rust) and Solidity/Rust ethexe interactions
-            - Missing error handling or edge cases introduced by the change
-
-            How to post your review:
-            1. For line-specific issues, use the create_inline_comment tool to post inline comments on the exact lines.
-               Use ```suggestion blocks for concrete code fixes. Set confirmed=true to post immediately.
-            2. After all inline comments, post a summary as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"
-
-            Summary format:
-            - **Summary**: One paragraph on what changed and why it matters
-            - **Correctness**: Issues found by reading callers and related code
-            - **Blast Radius**: What breaks or needs updating beyond the changed files
-
-            Be concise. Do NOT repeat the diff. Prefer inline comments with suggestions over listing issues in the summary.
-
-      - name: Run Claude Code Review (delta)
-        id: claude-review-delta
-        if: steps.review-mode.outputs.mode == 'delta'
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--mcp-config /tmp/mcp-config.json --allowedTools Bash'
-          prompt: |
-            You are doing a DELTA review of new commits pushed to a pull request in gear — a 114-crate Rust monorepo.
-            Only review changes between ${{ github.event.before }} (previous head) and ${{ github.sha }} (current head).
-            Do NOT re-review code that was already in the PR before this push.
-
-            Step 1: Call detect_changes_tool with base "${{ github.event.before }}", include_source=false, max_depth=1.
-            Step 2: Call get_review_context_tool with base "${{ github.event.before }}", include_source=false, max_depth=1.
-            Step 3: If you need source for specific high-risk functions, read those files directly.
-
-            IMPORTANT parameter rules for this large repo:
-            - Always set include_source=false on detect_changes_tool and get_review_context_tool
-            - Always set max_depth=1 (not 2) to avoid transitive explosion
-            - Never call get_review_context_tool with include_source=true or max_lines_per_file > 50
-
-            IMPORTANT: Before starting, read /tmp/prev-review.md — it contains your previous review of this PR.
-            Use it as context: do not repeat findings already covered there.
-
-            After getting the graph context, READ the source of changed files and their direct callers.
-            Focus on:
-            1. Do the new changes address or conflict with issues raised in your previous review?
-            2. Do the new changes introduce NEW correctness issues?
-            3. Are there consistency violations between old and new code in the PR?
-            4. Do callers still work correctly with the new behavior?
-
-            Also flag:
-            - Breaking changes to public APIs, wire formats, or serialization
-            - Cross-crate boundary issues (Rust) and Solidity/Rust ethexe interactions
-            - Missing error handling or edge cases introduced by the change
-
-            How to post your review:
-            1. For line-specific issues, use the create_inline_comment tool to post inline comments on the exact lines.
-               Use ```suggestion blocks for concrete code fixes. Set confirmed=true to post immediately.
-            2. After all inline comments, post a summary as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"
-
-            Summary format:
-            - **Delta Review** (reviewing commits ${{ github.event.before }}...${{ github.sha }})
-            - **New Changes**: What these commits add/modify
-            - **Previous Issues**: Which issues from the previous review are addressed/unaddressed
-            - **New Findings**: New correctness issues in the delta
-
-            Be concise. Do NOT re-review unchanged code. Focus only on what's new.
+            Summary: 3-5 sentences max. State what changed since last review, which previous issues are fixed/open, and new issues.
+            Keep it SHORT. Detail belongs in inline comments.
