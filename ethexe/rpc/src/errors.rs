@@ -23,6 +23,7 @@ const DB_ERROR: i32 = -32000;
 const RUNTIME_ERROR: i32 = -32001;
 const BAD_REQUEST_ERROR: i32 = -32002;
 const INTERNAL_ERROR: i32 = -32003;
+const NOT_FOUND_ERROR: i32 = -32004;
 
 pub fn db(err: &'static str) -> ErrorObject<'static> {
     ErrorObject::owned(DB_ERROR, "Database error", Some(err))
@@ -38,4 +39,8 @@ pub fn bad_request(err: impl ToString) -> ErrorObject<'static> {
 
 pub fn internal() -> ErrorObject<'static> {
     ErrorObject::owned(INTERNAL_ERROR, "Internal error", None::<&str>)
+}
+
+pub fn not_found(entity: impl ToString) -> ErrorObject<'static> {
+    ErrorObject::owned(NOT_FOUND_ERROR, "Not found", Some(entity.to_string()))
 }
