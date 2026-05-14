@@ -5438,6 +5438,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "wasm-encoder 0.230.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
