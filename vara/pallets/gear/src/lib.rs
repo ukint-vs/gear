@@ -692,6 +692,14 @@ pub mod pallet {
             Self::read_metahash_impl(program_id.cast(), gas_allowance).map_err(String::into_bytes)
         }
 
+        pub fn read_code_custom_section(
+            code_id: H256,
+            section_name: Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Vec<u8>> {
+            Self::read_code_custom_section_impl(code_id.cast(), section_name)
+                .map_err(String::into_bytes)
+        }
+
         #[cfg(not(test))]
         pub fn calculate_gas_info(
             source: H256,

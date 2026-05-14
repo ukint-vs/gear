@@ -16743,6 +16743,73 @@ fn fungible_token_stress_transfer() {
     });
 }
 
+mod read_code_custom_section_tests {
+    use super::*;
+    use wasm_encoder::{CustomSection, Module as WasmEncoderModule, TypeSection};
+
+    fn build_wasm_with_custom_section(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut module = WasmEncoderModule::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![], vec![]);
+        module.section(&types);
+        module.section(&CustomSection {
+            name: name.into(),
+            data: data.into(),
+        });
+        module.finish()
+    }
+
+    fn build_wasm_without_custom_sections() -> Vec<u8> {
+        let mut module = WasmEncoderModule::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![], vec![]);
+        module.section(&types);
+        module.finish()
+    }
+
+    #[test]
+    fn returns_section_bytes_when_present() {
+        new_test_ext().execute_with(|| {
+            let wasm = build_wasm_with_custom_section("sails:idl", b"hello idl");
+            let code_id = CodeId::generate(&wasm);
+            <<Test as Config>::CodeStorage as CodeStorage>::OriginalCodeMap::insert(
+                code_id,
+                wasm,
+            );
+
+            let result =
+                Gear::read_code_custom_section(code_id.into_origin(), b"sails:idl".to_vec());
+
+            assert_eq!(result, Ok(Some(b"hello idl".to_vec())));
+        });
+    }
+
+    #[test]
+    fn returns_none_when_section_absent() {
+        new_test_ext().execute_with(|| {
+            let wasm = build_wasm_without_custom_sections();
+            let code_id = CodeId::generate(&wasm);
+            <<Test as Config>::CodeStorage as CodeStorage>::OriginalCodeMap::insert(
+                code_id,
+                wasm,
+            );
+
+            let result =
+                Gear::read_code_custom_section(code_id.into_origin(), b"sails:idl".to_vec());
+
+            assert_eq!(result, Ok(None));
+        });
+    }
+
+    #[test]
+    fn returns_none_when_code_unknown() {
+        new_test_ext().execute_with(|| {
+            let result = Gear::read_code_custom_section(H256::random(), b"sails:idl".to_vec());
+            assert_eq!(result, Ok(None));
+        });
+    }
+}
+
 pub(crate) mod utils {
     #![allow(unused)]
 

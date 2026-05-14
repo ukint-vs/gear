@@ -156,6 +156,16 @@ pub trait GearApi<BlockHash, ResponseType> {
     #[method(name = "gear_readMetahash")]
     fn read_metahash(&self, program_id: H256, at: Option<BlockHash>) -> RpcResult<H256>;
 
+    /// Read a named custom section from a program's stored original WASM.
+    /// Returns `Ok(None)` if either the code or the section is absent.
+    #[method(name = "gear_readWasmCustomSection")]
+    fn read_wasm_custom_section(
+        &self,
+        code_id: H256,
+        section_name: String,
+        at: Option<BlockHash>,
+    ) -> RpcResult<Option<Bytes>>;
+
     #[subscription(
         name = "gear_subscribeProgramStateChanges",
         item = ProgramStateChange<BlockHash>,
@@ -654,6 +664,31 @@ where
                 api.read_metahash(at_hash, program_id, Some(self.allowance_multiplier))
             })
         }
+    }
+
+    fn read_wasm_custom_section(
+        &self,
+        code_id: H256,
+        section_name: String,
+        at: Option<<Block as BlockT>::Hash>,
+    ) -> RpcResult<Option<Bytes>> {
+        let at_hash = at.unwrap_or_else(|| self.client.info().best_hash);
+
+        let api_version = self.get_api_version(at_hash)?;
+        if api_version < 3 {
+            return Err(ErrorObject::owned(
+                8000,
+                "gear_readWasmCustomSection requires GearApi v3+ \
+                 (runtime upgrade pending or querying pre-upgrade block)",
+                None::<String>,
+            ));
+        }
+
+        let section_bytes = section_name.into_bytes();
+        self.run_with_api_copy(|api| {
+            api.read_code_custom_section(at_hash, code_id, section_bytes.clone())
+        })
+        .map(|opt| opt.map(Bytes))
     }
 
     fn subscribe_program_state_changes(

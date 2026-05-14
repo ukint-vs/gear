@@ -754,4 +754,20 @@ where
             message.to_string()
         )
     }
+
+    pub(crate) fn read_code_custom_section_impl(
+        code_id: CodeId,
+        section_name: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let section_name = core::str::from_utf8(&section_name)
+            .map_err(|e| format!("invalid section name utf-8: {e}"))?;
+
+        let Some(wasm) = T::CodeStorage::get_original_code(code_id) else {
+            return Ok(None);
+        };
+
+        gear_core::code::get_custom_section_data(&wasm, section_name)
+            .map(|opt| opt.map(<[u8]>::to_vec))
+            .map_err(|e| format!("wasm parse error: {e}"))
+    }
 }

@@ -74,6 +74,7 @@ gear-workspace-hack.workspace = true
 hex.workspace = true
 wat.workspace = true
 wasmparser.workspace = true
+wasm-encoder.workspace = true
 blake2.workspace = true
 gstd.workspace = true
 demo-async.workspace = true
