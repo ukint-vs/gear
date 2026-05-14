@@ -35,6 +35,13 @@ pub trait Code {
 
     #[method(name = "code_getInstrumented")]
     async fn get_instrumented_code(&self, runtime_id: u32, code_id: H256) -> RpcResult<Bytes>;
+
+    #[method(name = "code_readCustomSection")]
+    async fn read_code_custom_section(
+        &self,
+        code_id: H256,
+        section_name: String,
+    ) -> RpcResult<Option<Bytes>>;
 }
 
 pub struct CodeApi {
@@ -61,5 +68,21 @@ impl CodeServer for CodeApi {
             .instrumented_code(runtime_id, code_id.into())
             .map(|bytes| bytes.encode().into())
             .ok_or_else(|| errors::db("Failed to get code by supplied id"))
+    }
+
+    async fn read_code_custom_section(
+        &self,
+        code_id: H256,
+        section_name: String,
+    ) -> RpcResult<Option<Bytes>> {
+        let Some(wasm) = self.db.original_code(code_id.into()) else {
+            return Ok(None);
+        };
+
+        match gear_core::code::get_custom_section_data(&wasm, &section_name) {
+            Ok(Some(data)) => Ok(Some(data.to_vec().into())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(errors::runtime(format!("wasm parse error: {e}"))),
+        }
     }
 }

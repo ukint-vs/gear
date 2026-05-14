@@ -41,6 +41,7 @@ ntest.workspace = true
 tracing-subscriber.workspace = true
 
 ethexe-db = {workspace = true, features = ["mock"]}
+wasm-encoder.workspace = true
 
 [features]
 client = ["jsonrpsee/client"]

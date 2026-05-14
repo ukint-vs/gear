@@ -17,11 +17,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    InjectedApi, InjectedClient, InjectedTransactionAcceptance, RpcConfig, RpcEvent, RpcServer,
-    RpcService,
+    CodeClient, InjectedApi, InjectedClient, InjectedTransactionAcceptance, RpcConfig, RpcEvent,
+    RpcServer, RpcService,
 };
 use ethexe_common::{
-    db::InjectedStorageRW,
+    db::{CodesStorageRW, InjectedStorageRW},
     ecdsa::PrivateKey,
     gear::MAX_BLOCK_GAS_LIMIT,
     injected::{AddressedInjectedTransaction, Promise, SignedCompactPromise},
@@ -30,6 +30,7 @@ use ethexe_common::{
 use ethexe_db::Database;
 use futures::StreamExt;
 use gear_core::message::{ReplyCode, SuccessReplyReason};
+use gprimitives::H256;
 use jsonrpsee::{server::ServerHandle, ws_client::WsClientBuilder};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::task::{JoinHandle, JoinSet};
@@ -209,6 +210,62 @@ async fn test_cleanup_promise_subscribers() {
 
         wait_for_closed_subscriptions(injected_api.clone()).await;
     }
+}
+
+fn make_wasm_with_custom_sections(sections: &[(&str, &[u8])]) -> Vec<u8> {
+    use wasm_encoder::{CustomSection, Module, TypeSection};
+
+    let mut module = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![], vec![]);
+    module.section(&types);
+    for (name, data) in sections {
+        module.section(&CustomSection {
+            name: (*name).into(),
+            data: (*data).into(),
+        });
+    }
+    module.finish()
+}
+
+#[tokio::test]
+#[ntest::timeout(60_000)]
+async fn test_read_code_custom_section() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8020);
+    let db = Database::memory();
+    let (_handle, _rpc) = start_new_server(listen_addr, db.clone()).await;
+
+    let wasm = make_wasm_with_custom_sections(&[
+        ("sails:idl", b"hello idl"),
+        ("other", b"other data"),
+    ]);
+    let code_id = db.set_original_code(&wasm);
+    let code_id_h256: H256 = code_id.into();
+
+    let ws_client = WsClientBuilder::new()
+        .build(format!("ws://{listen_addr}"))
+        .await
+        .expect("WS client will be created");
+
+    let present = ws_client
+        .read_code_custom_section(code_id_h256, "sails:idl".into())
+        .await
+        .expect("RPC call succeeds");
+    assert_eq!(present.as_deref(), Some(b"hello idl".as_ref()));
+
+    let missing_section = ws_client
+        .read_code_custom_section(code_id_h256, "no:such".into())
+        .await
+        .expect("RPC call succeeds");
+    assert!(missing_section.is_none());
+
+    let unknown_code = ws_client
+        .read_code_custom_section(H256::random(), "sails:idl".into())
+        .await
+        .expect("RPC call succeeds");
+    assert!(unknown_code.is_none());
 }
 
 // Setup worker-threads=4 to simulate concurrent clients.
