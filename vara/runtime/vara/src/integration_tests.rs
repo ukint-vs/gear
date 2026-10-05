@@ -139,6 +139,14 @@ impl ExtBuilder {
         let mut storage = frame_system::GenesisConfig::<Runtime>::default()
             .build_storage()
             .unwrap();
+        pallet_gear_eth_bridge::GenesisConfig::<Runtime> {
+            bridge_domain: "0x9aac6d72e183672d20696112082accb15719870152120212f541e3e233837944"
+                .parse()
+                .expect("bridge domain fixture is valid"),
+            _config: Default::default(),
+        }
+        .assimilate_storage(&mut storage)
+        .unwrap();
 
         let mut balances = self
             .initial_authorities
@@ -1039,7 +1047,7 @@ fn session_validator(authority: &ValidatorAccountId) -> (AccountId, SessionKeys)
     )
 }
 
-fn read_first_mmr_leaf(ext: &mut sp_io::TestExternalities, key: Vec<u8>) -> crate::mmr::Leaf {
+fn read_mmr_leaf(ext: &mut sp_io::TestExternalities, key: Vec<u8>) -> crate::mmr::Leaf {
     type Node = pallet_mmr::primitives::DataOrHash<Keccak256, crate::mmr::Leaf>;
 
     ext.persist_offchain_overlay();
@@ -1053,7 +1061,7 @@ fn read_first_mmr_leaf(ext: &mut sp_io::TestExternalities, key: Vec<u8>) -> crat
     .expect("MMR node decodes")
     {
         Node::Data(leaf) => leaf,
-        Node::Hash(_) => panic!("first MMR node must contain leaf data"),
+        Node::Hash(_) => panic!("MMR leaf position must contain leaf data"),
     }
 }
 
@@ -1068,13 +1076,28 @@ fn bridge_finalization_at_n_is_committed_at_n_plus_one() {
         .stash(STASH)
         .build();
 
-    let (key, expected_extra) = ext.execute_with(|| {
+    let (first_key, first_extra, key, expected_extra) = ext.execute_with(|| {
+        frame_system::BlockHash::<Runtime>::insert(0, sp_core::H256::repeat_byte(0x99));
+        let uninitialized_extra = bridge_leaf::VaraBridgeProvider::extra_data();
         let alice = session_validator(&alice);
         <GearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
             true,
             [(&alice.0, alice.1.grandpa.clone())].into_iter(),
             [(&alice.0, alice.1.grandpa.clone())].into_iter(),
         );
+        let first_extra = bridge_leaf::VaraBridgeProvider::extra_data();
+        assert_ne!(first_extra, uninitialized_extra);
+        assert_eq!(
+            GearEthBridge::bridge_snapshot(),
+            Some((0, sp_core::H256::zero()))
+        );
+        Mmr::on_initialize(1);
+        let first_key = (
+            <Runtime as pallet_mmr::Config>::INDEXING_PREFIX,
+            0_u64,
+            System::parent_hash(),
+        )
+            .encode();
         assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
         assert_ok!(GearEthBridge::send_eth_message(
             RuntimeOrigin::signed(alice.0),
@@ -1082,23 +1105,29 @@ fn bridge_finalization_at_n_is_committed_at_n_plus_one() {
             vec![1, 2, 3],
         ));
         GearEthBridge::on_finalize(1);
-
+        assert_ok!(Timestamp::set(RuntimeOrigin::none(), SLOT_DURATION));
+        Timestamp::on_finalize(1);
         let expected_extra = bridge_leaf::VaraBridgeProvider::extra_data();
         initialize_block(2);
         Mmr::on_initialize(2);
         let key = (
             <Runtime as pallet_mmr::Config>::INDEXING_PREFIX,
-            0_u64,
+            1_u64,
             System::parent_hash(),
         )
             .encode();
-        (key, expected_extra)
+        (first_key, first_extra, key, expected_extra)
     });
 
-    assert_eq!(
-        read_first_mmr_leaf(&mut ext, key).leaf_extra,
-        expected_extra
-    );
+    let first_leaf = read_mmr_leaf(&mut ext, first_key);
+    assert_eq!(first_leaf.parent_number_and_hash.0, 0);
+    assert_eq!(first_leaf.leaf_extra, first_extra);
+    assert_eq!(first_leaf.encode().len(), 113);
+    assert_eq!(first_leaf.encode()[0], 0);
+    let leaf = read_mmr_leaf(&mut ext, key);
+    assert_eq!(leaf.leaf_extra, expected_extra);
+    assert_eq!(leaf.parent_number_and_hash.0, 1);
+    assert_ne!(leaf.leaf_extra, first_leaf.leaf_extra);
 }
 
 #[test]
@@ -1106,6 +1135,7 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
     use frame_support::traits::{OnFinalize, OnInitialize, OneSessionHandler};
     use pallet_session::SessionHandler;
     use sp_consensus_beefy::mmr::BeefyDataProvider;
+    use sp_runtime::traits::Hash;
 
     let alice = bridge_test_authority(AccountKeyring::Alice, "Alice");
     let bob = bridge_test_authority(AccountKeyring::Bob, "Bob");
@@ -1115,54 +1145,167 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
         .stash(STASH)
         .build();
 
-    let (key, expected_extra, expected_authorities_root) = ext.execute_with(|| {
-        let alice = session_validator(&alice);
-        let bob = session_validator(&bob);
-        let charlie = session_validator(&charlie);
-        let beefy_address = <pallet_beefy_mmr::BeefyEcdsaToEthereum as
-            sp_runtime::traits::Convert<_, Vec<u8>>>::convert(charlie.1.beefy.clone());
-        let expected_authorities_root =
-            <<Runtime as pallet_mmr::Config>::Hashing as sp_runtime::traits::Hash>::hash(
-                &beefy_address,
+    let genesis = sp_core::H256::repeat_byte(0x99);
+    let timestamp1 = SLOT_DURATION;
+    let timestamp2 = 2 * SLOT_DURATION;
+    let (key, expected_extra, expected_authorities_root, old_id, first_root) =
+        ext.execute_with(|| {
+            frame_system::BlockHash::<Runtime>::insert(0, genesis);
+            let alice = session_validator(&alice);
+            let bob = session_validator(&bob);
+            let charlie = session_validator(&charlie);
+            let beefy_address =
+                <pallet_beefy_mmr::BeefyEcdsaToEthereum as sp_runtime::traits::Convert<
+                    _,
+                    Vec<u8>,
+                >>::convert(charlie.1.beefy.clone());
+            let expected_authorities_root =
+                <<Runtime as pallet_mmr::Config>::Hashing as sp_runtime::traits::Hash>::hash(
+                    &beefy_address,
+                );
+
+            <GearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
+                true,
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+            );
+            assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
+            assert_ok!(GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(alice.0.clone()),
+                sp_core::H160::repeat_byte(2),
+                vec![4, 5, 6],
+            ));
+            GearEthBridge::on_finalize(1);
+            assert_ok!(Timestamp::set(RuntimeOrigin::none(), timestamp1));
+            Timestamp::on_finalize(1);
+            Babe::on_finalize(1);
+            let (old_id, first_root) = GearEthBridge::bridge_snapshot().unwrap();
+            assert_eq!(
+                GearEthBridge::bridge_domain(),
+                "0x9aac6d72e183672d20696112082accb15719870152120212f541e3e233837944"
+                    .parse()
+                    .expect("bridge domain fixture is valid"),
+            );
+            assert_ne!(GearEthBridge::bridge_domain(), genesis);
+            let expected_extra = bridge_leaf::VaraBridgeProvider::extra_data();
+            assert_eq!(
+                expected_extra,
+                Keccak256::hash(
+                    &[
+                        &[2][..],
+                        b"vara",
+                        GearEthBridge::bridge_domain().as_bytes(),
+                        &timestamp1.to_le_bytes(),
+                        &[1],
+                        &old_id.to_le_bytes(),
+                        first_root.as_bytes(),
+                    ]
+                    .concat()
+                )
+                .0
             );
 
-        <GearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
-            true,
-            [(&alice.0, alice.1.grandpa.clone())].into_iter(),
-            [(&alice.0, alice.1.grandpa.clone())].into_iter(),
-        );
-        assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
-        assert_ok!(GearEthBridge::send_eth_message(
-            RuntimeOrigin::signed(alice.0.clone()),
-            sp_core::H160::repeat_byte(2),
-            vec![4, 5, 6],
-        ));
-        GearEthBridge::on_finalize(1);
-        let expected_extra = bridge_leaf::VaraBridgeProvider::extra_data();
+            initialize_block(2);
+            // The manual session transition needs BABE's current-block pre-digest first.
+            let _ = <Babe as pallet_session::ShouldEndSession<BlockNumber>>::should_end_session(2);
+            <VaraSessionHandler as SessionHandler<AccountId>>::on_new_session(
+                true,
+                std::slice::from_ref(&bob),
+                &[charlie],
+            );
+            <AllPalletsWithSystem as OnInitialize<BlockNumberFor<Runtime>>>::on_initialize(2);
+            let key = (
+                <Runtime as pallet_mmr::Config>::INDEXING_PREFIX,
+                0_u64,
+                System::parent_hash(),
+            )
+                .encode();
+            assert_eq!(Timestamp::get(), timestamp1);
+            (
+                key,
+                expected_extra,
+                expected_authorities_root,
+                old_id,
+                first_root,
+            )
+        });
 
-        initialize_block(2);
-        <VaraSessionHandler as SessionHandler<AccountId>>::on_new_session(
-            true,
-            std::slice::from_ref(&bob),
-            &[charlie],
-        );
-        <AllPalletsWithSystem as OnInitialize<BlockNumberFor<Runtime>>>::on_initialize(2);
-        let key = (
-            <Runtime as pallet_mmr::Config>::INDEXING_PREFIX,
-            0_u64,
-            System::parent_hash(),
-        )
-            .encode();
-        (key, expected_extra, expected_authorities_root)
-    });
-
-    let leaf = read_first_mmr_leaf(&mut ext, key);
+    let leaf = read_mmr_leaf(&mut ext, key.clone());
     assert_eq!(leaf.leaf_extra, expected_extra);
     assert_eq!(leaf.beefy_next_authority_set.id, 2);
     assert_eq!(leaf.beefy_next_authority_set.len, 1);
     assert_eq!(
         leaf.beefy_next_authority_set.keyset_commitment,
         expected_authorities_root
+    );
+    assert_eq!(leaf.parent_number_and_hash.0, 1);
+    assert_eq!(leaf.encode().len(), 113);
+    assert_eq!(leaf.encode()[0], 0);
+
+    let first_key = key;
+    let (key, final_extra) = ext.execute_with(|| {
+        assert_eq!(System::block_hash(0), genesis);
+        assert_ok!(Timestamp::set(RuntimeOrigin::none(), timestamp2));
+        assert_ne!(
+            bridge_leaf::VaraBridgeProvider::extra_data(),
+            leaf.leaf_extra
+        );
+        assert_ok!(GearEthBridge::send_eth_message(
+            RuntimeOrigin::signed(alice.0.clone()),
+            sp_core::H160::repeat_byte(3),
+            vec![7, 8, 9],
+        ));
+        let hash = System::events()
+            .into_iter()
+            .rev()
+            .find_map(|record| match record.event {
+                RuntimeEvent::GearEthBridge(pallet_gear_eth_bridge::Event::MessageQueued {
+                    hash,
+                    ..
+                }) => Some(hash),
+                _ => None,
+            })
+            .expect("second message was queued");
+        GearEthBridge::on_finalize(2);
+        let proof = GearEthBridge::merkle_proof(hash).expect("final message has a proof");
+        assert_eq!(proof.leaf, hash);
+        assert_eq!(proof.leaf_index, 1);
+        assert_eq!(proof.number_of_leaves, 2);
+        assert_eq!(proof.proof, vec![first_root]);
+        assert_eq!(
+            proof.root,
+            Keccak256::hash(&[first_root.as_bytes(), hash.as_bytes()].concat())
+        );
+        assert_eq!(GearEthBridge::bridge_snapshot(), Some((old_id, proof.root)));
+        let extra = bridge_leaf::VaraBridgeProvider::extra_data();
+        Timestamp::on_finalize(2);
+        Babe::on_finalize(2);
+        initialize_block(3);
+        <AllPalletsWithSystem as OnInitialize<BlockNumberFor<Runtime>>>::on_initialize(3);
+        let key = (
+            <Runtime as pallet_mmr::Config>::INDEXING_PREFIX,
+            1_u64,
+            System::parent_hash(),
+        )
+            .encode();
+        assert_eq!(Timestamp::get(), timestamp2);
+        assert_eq!(
+            GearEthBridge::bridge_snapshot(),
+            Some((old_id + 1, sp_core::H256::zero()))
+        );
+        assert!(GearEthBridge::merkle_proof(hash).is_none());
+        (key, extra)
+    });
+    assert_eq!(read_mmr_leaf(&mut ext, first_key).encode(), leaf.encode());
+    let final_leaf = read_mmr_leaf(&mut ext, key);
+    assert_eq!(final_leaf.parent_number_and_hash.0, 2);
+    assert_eq!(final_leaf.encode().len(), 113);
+    assert_eq!(final_leaf.encode()[0], 0);
+    assert_eq!(final_leaf.leaf_extra, final_extra);
+    assert_ne!(final_leaf.leaf_extra, leaf.leaf_extra);
+    assert_eq!(
+        final_leaf.beefy_next_authority_set,
+        leaf.beefy_next_authority_set
     );
 }
 
@@ -1196,5 +1339,83 @@ fn inactive_beefy_still_allows_unsigned_mmr_root_digests() {
             assert!(!System::digest().logs.iter().any(
                 |digest| matches!(digest, DigestItem::Seal(engine, _) if *engine == BEEFY_ENGINE_ID)
             ));
+        });
+}
+
+#[test]
+fn beefy_only_session_changes_preserve_the_original_bridge_queue() {
+    use frame_support::traits::OneSessionHandler;
+    use pallet_session::SessionHandler;
+
+    let alice = bridge_test_authority(AccountKeyring::Alice, "Alice");
+    ExtBuilder::default()
+        .initial_authorities(vec![alice.clone()])
+        .stash(STASH)
+        .build()
+        .execute_with(|| {
+            let alice = session_validator(&alice);
+            <grandpa_keys_handler::GrandpaAndGearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
+                true,
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+            );
+            assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
+            assert_ok!(GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(alice.0.clone()),
+                sp_core::H160::repeat_byte(4),
+                vec![10, 11, 12],
+            ));
+            GearEthBridge::on_finalize(1);
+            Grandpa::on_finalize(1);
+            let original_grandpa_set_id = Grandpa::current_set_id();
+            let original_grandpa_authorities = Grandpa::grandpa_authorities();
+            let original = GearEthBridge::bridge_snapshot().expect("bridge initialized");
+            assert_ne!(original.1, sp_core::H256::zero());
+            let mut rotated = alice;
+            rotated.1.beefy = beefy_key("Bob").into();
+
+            initialize_block(2);
+            let _ = <Babe as pallet_session::ShouldEndSession<BlockNumber>>::should_end_session(2);
+            <VaraSessionHandler as SessionHandler<AccountId>>::on_new_session(
+                true,
+                std::slice::from_ref(&rotated),
+                std::slice::from_ref(&rotated),
+            );
+            Grandpa::on_finalize(2);
+            assert_eq!(Grandpa::current_set_id(), original_grandpa_set_id + 1);
+            assert_eq!(Grandpa::grandpa_authorities(), original_grandpa_authorities);
+            GearEthBridge::on_initialize(2);
+            GearEthBridge::on_initialize(3);
+            assert_eq!(GearEthBridge::bridge_snapshot(), Some(original));
+            assert_eq!(Beefy::validator_set().unwrap().validators(), &vec![rotated.1.beefy]);
+
+            initialize_block(4);
+            Mmr::on_initialize(4);
+            let mmr_root = pallet_mmr::RootHash::<Runtime>::get();
+            let leaves = pallet_mmr::NumberOfLeaves::<Runtime>::get();
+            assert_eq!(pallet_beefy::GenesisBlock::<Runtime>::get(), None);
+            assert_noop!(
+                Beefy::set_new_genesis(RuntimeOrigin::signed(rotated.0), 1),
+                sp_runtime::DispatchError::BadOrigin,
+            );
+
+            let domain = sp_core::H256::repeat_byte(7);
+            assert_ok!(Utility::batch_all(
+                RuntimeOrigin::root(),
+                vec![
+                    RuntimeCall::System(frame_system::Call::set_storage {
+                        items: vec![(
+                            pallet_gear_eth_bridge::BridgeDomain::<Runtime>::hashed_key().to_vec(),
+                            domain.encode(),
+                        )],
+                    }),
+                    RuntimeCall::Beefy(pallet_beefy::Call::set_new_genesis { delay_in_blocks: 1 }),
+                ],
+            ));
+            assert_eq!(pallet_beefy::GenesisBlock::<Runtime>::get(), Some(5));
+            assert_eq!(GearEthBridge::bridge_domain(), domain);
+            assert_eq!(GearEthBridge::bridge_snapshot(), Some(original));
+            assert_eq!(pallet_mmr::RootHash::<Runtime>::get(), mmr_root);
+            assert_eq!(pallet_mmr::NumberOfLeaves::<Runtime>::get(), leaves);
         });
 }

@@ -271,6 +271,28 @@ pub mod pallet {
     #[pallet::storage]
     pub type TransportFee<T> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+    /// Destination-bound BEEFY lane digest, fixed before initial BEEFY activation.
+    #[pallet::storage]
+    #[pallet::getter(fn bridge_domain)]
+    pub type BridgeDomain<T> = StorageValue<_, H256, ValueQuery>;
+
+    #[pallet::genesis_config]
+    #[derive(frame_support::DefaultNoBound)]
+    pub struct GenesisConfig<T: Config> {
+        /// Destination-bound lane digest fixed when the chain is created.
+        pub bridge_domain: H256,
+        /// Runtime configuration marker.
+        #[serde(skip)]
+        pub _config: core::marker::PhantomData<T>,
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            BridgeDomain::<T>::put(self.bridge_domain);
+        }
+    }
+
     /// Pallet Gear Eth Bridge's itself.
     #[pallet::pallet]
     #[pallet::storage_version(ETH_BRIDGE_STORAGE_VERSION)]
@@ -520,7 +542,14 @@ pub mod pallet {
                 return;
             }
 
-            if !Initialized::<T>::get() {
+            let grandpa_set_hash = Self::calculate_authority_set_hash(validators);
+            let initialized = Initialized::<T>::get();
+            // Other session keys can change without rotating the GRANDPA bridge queue.
+            if initialized && AuthoritySetHash::<T>::get() == Some(grandpa_set_hash) {
+                return;
+            }
+
+            if !initialized {
                 // Setting pallet status initialized.
                 Initialized::<T>::put(true);
 
@@ -543,7 +572,8 @@ pub mod pallet {
                 ClearTimer::<T>::put(2);
             }
 
-            Self::update_authority_set_hash(validators);
+            AuthoritySetHash::<T>::put(grandpa_set_hash);
+            Self::deposit_event(Event::<T>::AuthoritySetHashChanged(grandpa_set_hash));
         }
     }
 }

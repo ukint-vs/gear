@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 use crate::{
-    AuthoritySetHash, ClearTimer, Config, Error, Event, Initialized, MessageNonce, Pallet, Paused,
-    Queue, QueueCapacityOf, QueueChanged, QueueId, QueueMerkleRoot, QueueOverflowedSince,
-    QueuesInfo,
+    ClearTimer, Config, Error, Event, Initialized, MessageNonce, Pallet, Paused, Queue,
+    QueueCapacityOf, QueueChanged, QueueId, QueueMerkleRoot, QueueOverflowedSince, QueuesInfo,
 };
 use bp_header_chain::{
     AuthoritySet,
@@ -153,26 +152,15 @@ impl<T: Config> Pallet<T> {
         Some(justification.commit.target_number)
     }
 
-    /// Updates the authority set hash in storage and emits an event.
-    pub(super) fn update_authority_set_hash<'a, I>(validators: I)
+    /// Hashes the ordered GRANDPA keys used by the original bridge.
+    pub(super) fn calculate_authority_set_hash<'a, I>(validators: I) -> H256
     where
         I: Iterator<Item = (&'a T::AccountId, sp_consensus_grandpa::AuthorityId)>,
     {
-        log::debug!("Updating the authority set hash");
-
-        // Collecting all keys into `Vec<u8>`.
         let keys_bytes = validators
             .flat_map(|(_, key)| key.to_raw_vec())
             .collect::<Vec<_>>();
-
-        // Hashing keys bytes with `Blake2`.
-        let grandpa_set_hash = Blake2_256::hash(&keys_bytes).into();
-
-        // Setting new grandpa set hash into storage.
-        AuthoritySetHash::<T>::put(grandpa_set_hash);
-
-        // Depositing event about update in the set.
-        Self::deposit_event(Event::<T>::AuthoritySetHashChanged(grandpa_set_hash));
+        Blake2_256::hash(&keys_bytes).into()
     }
 
     /// Updates the queue merkle root in storage and emits an event if it has changed.

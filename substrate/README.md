@@ -22,7 +22,11 @@ Local Cargo package names intentionally stay compatible with upstream package na
 | `substrate/service` | `sc-service` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/substrate-wasm-builder` | `substrate-wasm-builder` | `gsubstrate-wasm-builder` | Apache-2.0 |
 
-`substrate/sc-consensus-beefy` additionally backports [Polkadot SDK #12812](https://github.com/paritytech/polkadot-sdk/pull/12812) so malformed justification requests penalize the peer without terminating the handler.
+The local BEEFY client backports [Polkadot SDK #12812](https://github.com/paritytech/polkadot-sdk/pull/12812) so malformed justification requests are rejected without terminating the handler, including a nonzero penalty for empty requests.
+
+Gear also carries raw-buffer gossip rebroadcast fixes and signed-proof/MMR regression coverage. Peer progress remains an untrusted discovery hint so lagging nodes can request historical proofs; returned proofs are verified against the requested round and authority set.
+
+Restart initialization reads the current finalized state before waiting for another finality notification. Recovery replays the exact persisted mandatory vote without re-signing, stops header catch-up at BEEFY genesis, and restores the finalized RPC head. These changes do not alter the persisted SCALE schema. The remaining SDK stays pinned to the source reference above.
 
 ## Gear Compatibility Crates
 

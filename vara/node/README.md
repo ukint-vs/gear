@@ -191,3 +191,39 @@ To connect to a custom chain, the first thing one needs to do is to obtain the c
 ### Run the node as validator
 
 To run a Vara network validator, the node has to be started with the `--validator` flag. To become the Vara mainnet validator a few additional steps need to be made which include registering yourself as a candidate (by sending an extirnsic to the network), bonding the necessary minimum amount of Vara tokens and configuring session keys. The process is described in detail in the [Vara Network Wiki](https://wiki.vara.network/docs/staking/validate/).
+
+### BEEFY upgrade and later activation
+
+The runtime upgrade leaves BEEFY inactive. The session-key migration supports the
+Vara 11000 predecessor, preserves the four existing keys and queued order, and
+adds placeholder BEEFY keys. Validators must replace those placeholders with real
+node keys before activation; they do not need to do so before the runtime upgrade.
+
+Before activation, check the current, queued and eligible validators' BEEFY keys
+and bind `GearEthBridge.BridgeDomain` to the approved destination chain and original
+queue. On an existing chain, governance can use the existing Root
+`Utility.batch_all` call to set that storage value through `System.set_storage`
+and call `Beefy.set_new_genesis(delay_in_blocks = 1)` atomically. Reject an already
+active BEEFY instance or a conflicting lane binding in the activation preflight.
+Root remains trusted; this procedure does not add a new key-admission framework.
+
+BEEFY-only session-key changes preserve the original bridge queue. Actual GRANDPA
+authority changes retain the existing delayed queue rollover. Do not reset bridge
+storage, the MMR, custody or public-chain genesis as part of BEEFY activation.
+
+The bridge pallet continues to own the original queue, message nonce and history.
+The runtime commits its snapshot using leaf-extra version 2:
+`2 || "vara" || bridgeDomain[32] || parentTimestampLE[8] || initialized[1] || queueIdLE[8] || root[32]`.
+The Keccak hash of these 86 bytes is the MMR leaf extra. Message payloads and
+their nonce-based hashing remain unchanged.
+
+MMR insertion begins with the runtime upgrade, before BEEFY activation. Proof-serving
+nodes need offchain indexing before that first insertion. Relayers must distinguish
+the MMR start block from the later BEEFY genesis and follow GRANDPA authority-set
+events even when the bridge queue does not roll over. Ethereum verifier cutover,
+custody and replay preservation belong to the existing bridge contracts and actors.
+Do not change a live lane binding to introduce another destination.
+
+Use `release` for local builds and migration rehearsals. Reserve `production`
+for the actual release. Before proposing an upgrade on mainnet, qualify the final
+release Wasm against pinned full state and retain runtime-weight/capacity evidence.

@@ -121,6 +121,15 @@ where
         self.mandatory_done
     }
 
+    pub(crate) fn previous_vote(
+        &self,
+        authority: AuthorityId,
+        number: NumberFor<B>,
+    ) -> Option<&VoteMessage<NumberFor<B>, AuthorityId, <AuthorityId as RuntimeAppPublic>::Signature>>
+    {
+        self.previous_votes.get(&(authority, number))
+    }
+
     pub(crate) fn add_vote(
         &mut self,
         vote: VoteMessage<NumberFor<B>, AuthorityId, <AuthorityId as RuntimeAppPublic>::Signature>,

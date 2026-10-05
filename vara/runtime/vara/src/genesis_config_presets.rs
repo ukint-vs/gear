@@ -129,6 +129,7 @@ pub fn testnet_genesis(
         gear_bank: GearBankConfig {
             _config: Default::default(),
         },
+        gear_eth_bridge: Default::default(),
         ..Default::default()
     }
 }

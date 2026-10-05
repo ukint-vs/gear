@@ -506,7 +506,7 @@ pub struct VaraMmrWeight;
 impl pallet_mmr::WeightInfo for VaraMmrWeight {
     fn on_initialize(peaks: u32) -> Weight {
         <() as pallet_mmr::WeightInfo>::on_initialize(peaks)
-            .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads_writes(5, 1))
+            .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads_writes(7, 1))
     }
 }
 

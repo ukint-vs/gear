@@ -1171,3 +1171,10 @@ fn rotate_keys() {
         );
     })
 }
+
+#[test]
+fn bridge_domain_is_initialized_from_genesis() {
+    new_test_ext().execute_with(|| {
+        assert_eq!(GearEthBridge::bridge_domain(), H256::repeat_byte(0x44));
+    });
+}

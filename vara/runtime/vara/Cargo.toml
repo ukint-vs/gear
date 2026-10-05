@@ -77,6 +77,7 @@ sp-core.workspace = true
 sp-externalities = { workspace = true, optional = true }
 sp-genesis-builder.workspace = true
 sp-inherents.workspace = true
+sp-io.workspace = true
 sp-mmr-primitives.workspace = true
 sp-offchain.workspace = true
 sp-runtime.workspace = true
@@ -120,7 +121,6 @@ gbuiltin-proxy.workspace = true
 gear-workspace-hack.workspace = true
 
 [dev-dependencies]
-sp-io.workspace = true
 sp-keyring.workspace = true
 tracing-subscriber.workspace = true
 wat.workspace = true
@@ -213,6 +213,7 @@ std = [
     "sp-consensus-beefy/std",
     "sp-consensus-grandpa/std",
     "sp-core/std",
+    "sp-io/std",
     "sp-externalities",
     "sp-inherents/std",
     "sp-mmr-primitives/std",

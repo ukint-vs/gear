@@ -193,7 +193,7 @@ where
             let request = match self
                 .request_receiver
                 .recv(|bytes| {
-                    let bytes = bytes.min(i32::MAX as usize) as i32;
+                    let bytes = bytes.clamp(1, i32::MAX as usize) as i32;
                     vec![ReputationChange::new(
                         bytes.saturating_mul(cost::PER_UNDECODABLE_BYTE),
                         "BEEFY: Bad request payload",
@@ -285,11 +285,16 @@ mod malformed_request_tests {
         let (tx, mut handler) = test_handler();
         let handler_task = tokio::spawn(async move { handler.run().await });
 
-        let response = send_request(&tx, vec![0xff])
-            .await
-            .expect("handler answers malformed request");
-        assert_eq!(response.result, Err(()));
-        assert!(!response.reputation_changes.is_empty());
+        for payload in [vec![], vec![0xff]] {
+            let response = send_request(&tx, payload)
+                .await
+                .expect("handler answers malformed request");
+            assert_eq!(response.result, Err(()));
+            assert!(response
+                .reputation_changes
+                .iter()
+                .any(|change| change.value < 0));
+        }
 
         let mut payload =
             JustificationRequest::<substrate_test_runtime_client::runtime::Block> { begin: 1 }
@@ -299,7 +304,10 @@ mod malformed_request_tests {
             .await
             .expect("handler answers request with trailing data");
         assert_eq!(response.result, Err(()));
-        assert!(!response.reputation_changes.is_empty());
+        assert!(response
+            .reputation_changes
+            .iter()
+            .any(|change| change.value < 0));
 
         let payload =
             JustificationRequest::<substrate_test_runtime_client::runtime::Block> { begin: 1 }

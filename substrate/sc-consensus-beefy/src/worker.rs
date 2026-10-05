@@ -908,6 +908,46 @@ where
                 .fuse(),
         );
 
+        if let Ok(rounds) = self.voting_oracle().active_rounds() {
+            if !rounds.mandatory_done() && rounds.session_start() <= self.persisted_state.best_voted
+            {
+                // A process restart loses the gossip cache, not the persisted signature.
+                // Replay the exact mandatory vote without recomputing or signing its commitment.
+                if let Some(vote) = self
+                    .key_store
+                    .authority_id(rounds.validators())
+                    .and_then(|id| rounds.previous_vote(id, rounds.session_start()))
+                {
+                    let encoded_vote = GossipMessage::<B, AuthorityId>::Vote(vote.clone()).encode();
+                    self.comms.gossip_engine.gossip_message(
+                        votes_topic::<B>(),
+                        encoded_vote,
+                        false,
+                    );
+                }
+            }
+        }
+
+        // RPC subscribes before the gadget starts. Restore its head without waiting for a new
+        // proof; zero means no BEEFY round has concluded and must not be advertised.
+        let best_beefy = self.persisted_state.best_beefy();
+        if !best_beefy.is_zero() {
+            match self
+                .backend
+                .blockchain()
+                .expect_block_hash_from_id(&BlockId::Number(best_beefy))
+            {
+                Ok(hash) => self
+                    .links
+                    .to_rpc_best_block_sender
+                    .notify(|| Ok::<_, ()>(hash))
+                    .expect("forwards closure result; the closure always returns Ok; qed."),
+                Err(err) => {
+                    debug!(target: LOG_TARGET, "🥩 Error restoring BEEFY RPC head: {}", err)
+                }
+            }
+        }
+
         self.process_new_state();
         let error = loop {
             // Mutable reference used to drive the gossip engine.
@@ -1056,7 +1096,7 @@ pub(crate) mod tests {
     };
     use futures::{future::poll_fn, task::Poll};
     use parking_lot::Mutex;
-    use sc_client_api::{Backend as BackendT, HeaderBackend};
+    use sc_client_api::{Backend as BackendT, BlockchainEvents, HeaderBackend};
     use sc_network_gossip::GossipEngine;
     use sc_network_sync::SyncingService;
     use sc_network_test::TestNetFactory;
@@ -1071,7 +1111,7 @@ pub(crate) mod tests {
     use sp_runtime::traits::{Header as HeaderT, One};
     use substrate_test_runtime_client::{
         runtime::{Block, Digest, DigestItem, Header},
-        Backend,
+        Backend, BlockBuilderExt, ClientExt,
     };
 
     impl<B: super::Block, AuthorityId: AuthorityIdBound> PersistedState<B, AuthorityId> {
@@ -1189,6 +1229,285 @@ pub(crate) mod tests {
             persisted_state,
             is_authority: true,
         }
+    }
+
+    #[tokio::test]
+    async fn restart_replays_persisted_mandatory_votes_without_signing() {
+        struct NoNewPayload;
+        impl PayloadProvider<Block> for NoNewPayload {
+            fn payload(&self, _: &Header) -> Option<Payload> {
+                panic!("restart must replay the saved vote, not author another one");
+            }
+        }
+
+        let keys = [Keyring::Alice, Keyring::Bob];
+        let validator_set = ValidatorSet::new(make_beefy_ids(&keys), 0).unwrap();
+        let mut net = BeefyTestNet::new(2);
+        let mut workers = Vec::new();
+        for (i, key) in keys.iter().enumerate() {
+            workers.push(create_beefy_worker(
+                net.peer(i),
+                key,
+                1,
+                validator_set.clone(),
+            ));
+        }
+        let hash =
+            net.peer(0)
+                .generate_blocks(1, sp_consensus::BlockOrigin::File, |mut builder| {
+                    builder
+                        .push_deposit_log_digest_item(DigestItem::Consensus(
+                            BEEFY_ENGINE_ID,
+                            ConsensusLog::<ecdsa_crypto::AuthorityId>::MmrRoot(
+                                sp_core::H256::repeat_byte(2),
+                            )
+                            .encode(),
+                        ))
+                        .unwrap();
+                    builder.build().unwrap().block
+                })[0];
+        net.run_until_sync().await;
+
+        let mut saved_votes = Vec::new();
+        for (i, worker) in workers.iter_mut().enumerate() {
+            let client = net.peer(i).client().as_client();
+            client.finalize_block(hash, None).unwrap();
+            let header = client.expect_header(hash).unwrap();
+            worker.persisted_state = PersistedState::checked_new(
+                header,
+                0,
+                vec![Rounds::new(2, validator_set.clone())].into(),
+                1,
+                2,
+            )
+            .unwrap();
+            crate::aux_schema::write_current_version(worker.backend.as_ref()).unwrap();
+            // Do not poll either gossip engine: each authority signs in isolation.
+            worker.do_vote(2).unwrap();
+            let saved = crate::aux_schema::load_persistent::<Block, _, ecdsa_crypto::AuthorityId>(
+                worker.backend.as_ref(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(saved.best_voted, 2);
+            assert_eq!(saved.best_beefy(), 0);
+            saved_votes.push(
+                saved
+                    .active_round()
+                    .unwrap()
+                    .previous_vote(keys[i].public(), 2)
+                    .unwrap()
+                    .clone(),
+            );
+            assert!(worker
+                .backend
+                .blockchain()
+                .justifications(hash)
+                .unwrap()
+                .is_none());
+        }
+
+        let (_, proof_streams) = get_beefy_streams(&mut net, keys.iter().cloned().enumerate());
+        let mut tasks = Vec::new();
+        for (i, worker) in workers.into_iter().enumerate() {
+            let peer = net.peer(i);
+            let runtime = Arc::new(TestApi::new(
+                2,
+                &validator_set,
+                sp_core::H256::repeat_byte(2),
+            ));
+            let key_store = Some(create_beefy_keystore(&keys[i])).into();
+            let persisted_state = crate::BeefyWorkerBuilder::load_or_init_state(
+                2,
+                peer.client().as_client().expect_header(hash).unwrap(),
+                1,
+                worker.backend.clone(),
+                runtime.clone(),
+                &key_store,
+                &None,
+                true,
+            )
+            .await
+            .unwrap();
+            let known_peers = Arc::new(Mutex::new(KnownPeers::new()));
+            let gossip_validator = Arc::new(GossipValidator::new(
+                known_peers.clone(),
+                Arc::new(TestNetwork::new().0),
+            ));
+            gossip_validator.update_filter(persisted_state.gossip_filter_config().unwrap());
+            // Discard the old message cache while retaining the real notification transport.
+            let notification_service = worker.comms.gossip_engine.take_notification_service();
+            let comms = BeefyComms {
+                gossip_engine: GossipEngine::new(
+                    peer.network_service().clone(),
+                    peer.sync_service().clone(),
+                    notification_service,
+                    crate::tests::beefy_gossip_proto_name(),
+                    gossip_validator.clone(),
+                    None,
+                ),
+                gossip_validator,
+                on_demand_justifications: OnDemandJustificationsEngine::new(
+                    peer.network_service().clone(),
+                    "/beefy/justifs/1".into(),
+                    known_peers,
+                    None,
+                ),
+            };
+            let builder = crate::BeefyWorkerBuilder {
+                backend: worker.backend,
+                runtime,
+                key_store,
+                metrics: None,
+                persisted_state,
+            };
+            let restarted = builder.build(
+                NoNewPayload,
+                worker.sync,
+                comms,
+                worker.links,
+                BTreeMap::new(),
+                true,
+            );
+            let finality = peer.client().as_client().finality_notification_stream();
+            tasks.push(tokio::spawn(async move {
+                let mut finality = crate::tests::start_finality_worker(finality);
+                let (_sender, stream) =
+                    BeefyVersionedFinalityProofStream::<Block, ecdsa_crypto::AuthorityId>::channel(
+                    );
+                let mut imports = stream.subscribe(100_000).fuse();
+                restarted.run(&mut imports, &mut finality).await
+            }));
+        }
+        let net = Arc::new(Mutex::new(net));
+        let proofs = futures::future::join_all(
+            proof_streams
+                .into_iter()
+                .map(|mut stream| async move { stream.next().await.unwrap() }),
+        );
+        let mut received = None;
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(10),
+            crate::tests::run_until(
+                Box::pin(async {
+                    received = Some(proofs.await);
+                }),
+                &net,
+            ),
+        )
+        .await
+        .expect("restarted authorities must complete the mandatory round");
+        for task in tasks {
+            task.abort();
+        }
+        for proof in received.unwrap() {
+            crate::justification::verify_with_validator_set::<Block, ecdsa_crypto::AuthorityId>(
+                2,
+                &validator_set,
+                &proof,
+            )
+            .unwrap();
+            let VersionedFinalityProof::V1(commitment) = proof;
+            assert_eq!(commitment.commitment, saved_votes[0].commitment);
+            assert_eq!(
+                commitment.signatures,
+                saved_votes
+                    .iter()
+                    .map(|vote| Some(vote.signature.clone()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        for i in 0..2 {
+            let backend = net.lock().peer(i).client().as_backend();
+            let state = crate::aux_schema::load_persistent::<Block, _, ecdsa_crypto::AuthorityId>(
+                &*backend,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(state.best_beefy(), 2);
+            assert_eq!(state.best_voted, 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_restores_finalized_head_without_a_new_proof() {
+        let keys = [Keyring::Alice];
+        let validator_set = ValidatorSet::new(make_beefy_ids(&keys), 0).unwrap();
+        let mut net = BeefyTestNet::new(1);
+        let mut worker = create_beefy_worker(net.peer(0), &keys[0], 1, validator_set.clone());
+        let hash = worker
+            .persisted_state
+            .voting_oracle
+            .best_grandpa_block_header
+            .hash();
+        crate::aux_schema::write_current_version(worker.backend.as_ref()).unwrap();
+        let commitment = Commitment {
+            payload: Payload::from_single_entry(known_payloads::MMR_ROOT_ID, vec![]),
+            block_number: 1,
+            validator_set_id: validator_set.id(),
+        };
+        let vote = VoteMessage {
+            signature: crate::communication::gossip::tests::sign_commitment(&keys[0], &commitment),
+            commitment,
+            id: keys[0].public(),
+        };
+        worker.handle_vote(vote).unwrap();
+        worker.persisted_state = crate::BeefyWorkerBuilder::load_or_init_state(
+            1,
+            worker
+                .persisted_state
+                .voting_oracle
+                .best_grandpa_block_header
+                .clone(),
+            1,
+            worker.backend.clone(),
+            worker.runtime.clone(),
+            &worker.key_store,
+            &None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(worker.persisted_state.best_beefy(), 1);
+        let (mut heads, mut proofs) = get_beefy_streams(&mut net, keys.into_iter().enumerate());
+        let mut head = heads.pop().unwrap();
+        let mut proof = proofs.pop().unwrap();
+        let finality = net
+            .peer(0)
+            .client()
+            .as_client()
+            .finality_notification_stream();
+        let mut finality = crate::tests::start_finality_worker(finality);
+        let (_sender, stream) =
+            BeefyVersionedFinalityProofStream::<Block, ecdsa_crypto::AuthorityId>::channel();
+        let mut imports = stream.subscribe(100_000).fuse();
+        let mut run = Box::pin(worker.run(&mut imports, &mut finality));
+        assert!(run.as_mut().now_or_never().is_none());
+        assert_eq!(head.next().now_or_never(), Some(Some(hash)));
+        assert!(proof.next().now_or_never().is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_advertise_an_unfinalized_head() {
+        let keys = [Keyring::Alice, Keyring::Bob];
+        let validator_set = ValidatorSet::new(make_beefy_ids(&keys), 0).unwrap();
+        let mut net = BeefyTestNet::new(1);
+        let mut worker = create_beefy_worker(net.peer(0), &keys[0], 1, validator_set);
+        worker.key_store = Arc::new(None.into());
+        let (mut heads, _) = get_beefy_streams(&mut net, std::iter::once((0, keys[0].clone())));
+        let mut head = heads.pop().unwrap();
+        let finality = net
+            .peer(0)
+            .client()
+            .as_client()
+            .finality_notification_stream();
+        let mut finality = crate::tests::start_finality_worker(finality);
+        let (_sender, stream) =
+            BeefyVersionedFinalityProofStream::<Block, ecdsa_crypto::AuthorityId>::channel();
+        let mut imports = stream.subscribe(100_000).fuse();
+        let mut run = Box::pin(worker.run(&mut imports, &mut finality));
+        assert!(run.as_mut().now_or_never().is_none());
+        assert!(head.next().now_or_never().is_none());
     }
 
     #[test]

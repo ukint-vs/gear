@@ -17,7 +17,6 @@ use crate::{
     error::Error,
     finality_notification_transformer_future, gossip_protocol_name,
     justification::*,
-    wait_for_runtime_pallet,
     worker::PersistedState,
     BeefyRPCLinks, BeefyVoterLinks, BeefyWorkerBuilder, KnownPeers, UnpinnedFinalityNotification,
 };
@@ -385,23 +384,25 @@ async fn voter_init_setup(
     api: &TestApi,
 ) -> Result<PersistedState<Block, ecdsa_crypto::AuthorityId>, Error> {
     let backend = net.peer(0).client().as_backend();
-    let (beefy_genesis, best_grandpa) = wait_for_runtime_pallet(api, finality).await.unwrap();
-    let key_store = None.into();
-    let metrics = None;
-    BeefyWorkerBuilder::load_or_init_state(
-        beefy_genesis,
-        best_grandpa,
-        1,
+    let gossip_validator = Arc::new(GossipValidator::new(
+        Arc::new(Mutex::new(KnownPeers::new())),
+        Arc::new(TestNetwork::new().0),
+    ));
+    BeefyWorkerBuilder::async_initialize(
         backend,
         Arc::new(api.clone()),
-        &key_store,
-        &metrics,
+        None.into(),
+        None,
+        1,
+        gossip_validator,
+        finality,
         true,
     )
     .await
+    .map(|builder| builder.persisted_state)
 }
 
-fn start_finality_worker(
+pub(super) fn start_finality_worker(
     finality: FinalityNotifications<Block>,
 ) -> Fuse<TracingUnboundedReceiver<UnpinnedFinalityNotification<Block>>> {
     let (transformer, finality_notifications) = finality_notification_transformer_future(finality);
@@ -485,7 +486,7 @@ where
     tasks.for_each(|_| async move {})
 }
 
-async fn run_until(future: impl Future + Unpin, net: &Arc<Mutex<BeefyTestNet>>) {
+pub(super) async fn run_until(future: impl Future + Unpin, net: &Arc<Mutex<BeefyTestNet>>) {
     let drive_to_completion = futures::future::poll_fn(|cx| {
         net.lock().poll(cx);
         Poll::<()>::Pending
@@ -1239,13 +1240,6 @@ async fn should_initialize_voter_at_genesis() {
     let hashes = net
         .generate_blocks_and_sync(15, 10, &validator_set, false)
         .await;
-    let finality = net
-        .peer(0)
-        .client()
-        .as_client()
-        .finality_notification_stream();
-
-    let mut finality_notifications = start_finality_worker(finality);
 
     // finalize 13 without justifications
     net.peer(0)
@@ -1254,11 +1248,23 @@ async fn should_initialize_voter_at_genesis() {
         .finalize_block(hashes[13], None)
         .unwrap();
 
+    // A restarted node subscribes after finalization and need not receive a new notification.
+    let finality = net
+        .peer(0)
+        .client()
+        .as_client()
+        .finality_notification_stream();
+    let mut finality_notifications = start_finality_worker(finality);
+
     let api = TestApi::with_validator_set(&validator_set);
     // load persistent state - nothing in DB, should init at genesis
-    let persisted_state = voter_init_setup(&mut net, &mut finality_notifications, &api)
-        .await
-        .unwrap();
+    let persisted_state = tokio::time::timeout(
+        Duration::from_secs(1),
+        voter_init_setup(&mut net, &mut finality_notifications, &api),
+    )
+    .await
+    .expect("initialization must use the already-finalized head without a new notification")
+    .unwrap();
 
     // Test initialization at session boundary.
     // verify voter initialized with two sessions starting at blocks 1 and 10
@@ -1666,6 +1672,74 @@ async fn should_catch_up_when_loading_saved_voter_state() {
     assert_eq!(persisted_state.best_beefy(), 0);
     assert_eq!(persisted_state.best_grandpa_number(), 25);
     assert_eq!(persisted_state.voting_oracle().voting_target(), Some(1));
+}
+
+#[tokio::test]
+async fn saved_state_before_first_proof_does_not_wait_for_pre_activation_headers() {
+    use crate::round::Rounds;
+    use sc_client_api::backend::{BlockImportOperation, NewBlockState};
+
+    let keys = [BeefyKeyring::Alice];
+    let validator_set = ValidatorSet::new(make_beefy_ids(&keys), 0).unwrap();
+    let mut net = BeefyTestNet::new(1);
+    let backend = net.peer(0).client().as_backend();
+    let genesis = 100;
+    let missing_parent = H256::repeat_byte(0x42);
+    let mut header = <Block as sp_runtime::traits::Block>::Header::new(
+        genesis,
+        Default::default(),
+        Default::default(),
+        missing_parent,
+        Default::default(),
+    );
+    // Real backend with the required activation..head range, but no pre-activation parent.
+    for number in genesis..=genesis + 2 {
+        header.set_number(number);
+        let mut operation = backend.begin_operation().unwrap();
+        operation
+            .set_block_data(header.clone(), None, None, None, NewBlockState::Normal)
+            .unwrap();
+        backend.commit_operation(operation).unwrap();
+        if number == genesis {
+            let state = PersistedState::<Block, ecdsa_crypto::AuthorityId>::checked_new(
+                header.clone(),
+                0,
+                vec![Rounds::new(genesis, validator_set.clone())].into(),
+                1,
+                genesis,
+            )
+            .unwrap();
+            crate::aux_schema::write_current_version(&*backend).unwrap();
+            crate::aux_schema::write_voter_state(&*backend, &state).unwrap();
+        }
+        if number < genesis + 2 {
+            header.set_parent_hash(header.hash());
+        }
+    }
+    assert!(backend
+        .blockchain()
+        .header(missing_parent)
+        .unwrap()
+        .is_none());
+    let loaded = tokio::time::timeout(
+        Duration::from_secs(1),
+        BeefyWorkerBuilder::load_or_init_state(
+            genesis,
+            header,
+            1,
+            backend,
+            Arc::new(TestApi::new(genesis, &validator_set, GOOD_MMR_ROOT)),
+            &None.into(),
+            &None,
+            true,
+        ),
+    )
+    .await
+    .expect("restart must not await unrelated pre-activation headers")
+    .unwrap();
+    assert_eq!(loaded.best_beefy(), 0);
+    assert_eq!(loaded.best_grandpa_number(), genesis + 2);
+    assert_eq!(loaded.voting_oracle().voting_target(), Some(genesis));
 }
 
 #[tokio::test]

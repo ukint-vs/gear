@@ -294,9 +294,14 @@ where
         finality_notifications: &mut Fuse<FinalityNotifications<B>>,
         is_authority: bool,
     ) -> Result<Self, Error> {
-        // Wait for BEEFY pallet to be active before starting voter.
+        // The stream is already subscribed: inspect finalized state before waiting for new events.
+        let finalized_hash = backend.blockchain().info().finalized_hash;
+        let best_grandpa = backend
+            .blockchain()
+            .expect_header(finalized_hash)
+            .map_err(|err| Error::Backend(err.to_string()))?;
         let (beefy_genesis, best_grandpa) =
-            wait_for_runtime_pallet(&*runtime, finality_notifications).await?;
+            wait_for_runtime_pallet(&*runtime, best_grandpa, finality_notifications).await?;
 
         let persisted_state = Self::load_or_init_state(
             beefy_genesis,
@@ -474,7 +479,7 @@ where
             // Make sure that all the headers that we need have been synced.
             let mut new_sessions = vec![];
             let mut header = best_grandpa.clone();
-            while *header.number() > state.best_beefy() {
+            while *header.number() > state.best_beefy().max(beefy_genesis) {
                 if state.voting_oracle().can_add_session(*header.number()) {
                     if let Some(active) = find_authorities_change::<B, AuthorityId>(&header) {
                         new_sessions.push((active, *header.number()));
@@ -605,7 +610,7 @@ pub async fn start_beefy_gadget<B, BE, C, N, P, R, S, AuthorityId>(
         None,
     );
 
-    // The `GossipValidator` adds and removes known peers based on valid votes and network
+    // The GossipValidator adds and removes known peers based on advertised progress and network
     // events.
     let on_demand_justifications = OnDemandJustificationsEngine::new(
         network.clone(),
@@ -752,10 +757,11 @@ where
     }
 }
 
-/// Wait for BEEFY runtime pallet to be available, return active validator set.
-/// Should be called only once during worker initialization.
+/// Return BEEFY genesis and the finalized header once activation is finalized.
+/// Subscribe to finality before reading the initial finalized header.
 async fn wait_for_runtime_pallet<B, R, AuthorityId: AuthorityIdBound>(
     runtime: &R,
+    mut best_grandpa: B::Header,
     finality: &mut Fuse<FinalityNotifications<B>>,
 ) -> Result<(NumberFor<B>, <B as Block>::Header), Error>
 where
@@ -765,23 +771,28 @@ where
 {
     info!(target: LOG_TARGET, "🥩 BEEFY gadget waiting for BEEFY pallet to become available...");
     loop {
-        let notif = finality.next().await.ok_or_else(|| {
-            let err_msg = "🥩 Finality stream has unexpectedly terminated.".into();
-            error!(target: LOG_TARGET, "{}", err_msg);
-            Error::Backend(err_msg)
-        })?;
-        let at = notif.header.hash();
+        let at = best_grandpa.hash();
         if let Some(start) = runtime.runtime_api().beefy_genesis(at).ok().flatten() {
-            if *notif.header.number() >= start {
-                // Beefy pallet available, return header for best grandpa at the time.
+            if *best_grandpa.number() >= start {
                 info!(
                     target: LOG_TARGET,
                     "🥩 BEEFY pallet available: block {:?} beefy genesis {:?}",
-                    notif.header.number(), start
+                    best_grandpa.number(), start
                 );
-                return Ok((start, notif.header));
+                return Ok((start, best_grandpa));
             }
         }
+        // Notifications queued before the initial snapshot cannot advance activation.
+        best_grandpa = loop {
+            let notif = finality.next().await.ok_or_else(|| {
+                let err_msg = "🥩 Finality stream has unexpectedly terminated.".into();
+                error!(target: LOG_TARGET, "{}", err_msg);
+                Error::Backend(err_msg)
+            })?;
+            if notif.header.number() > best_grandpa.number() {
+                break notif.header;
+            }
+        };
     }
 }
 

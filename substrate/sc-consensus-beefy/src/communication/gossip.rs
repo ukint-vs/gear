@@ -268,6 +268,8 @@ where
     ) -> Action<B::Hash> {
         let round = vote.commitment.block_number;
         let set_id = vote.commitment.validator_set_id;
+        // Unverified progress is only a discovery hint; requested proofs are verified separately.
+        self.known_peers.lock().note_vote_for(*sender, round);
         // Verify general usefulness of the message.
         // We are going to discard old votes right away (without verification).
         {
@@ -294,7 +296,6 @@ where
         }
 
         if BeefyKeystore::verify(&vote.id, &vote.signature, &vote.commitment.encode()) {
-            self.known_peers.lock().note_vote_for(*sender, round);
             Action::Keep(self.votes_topic, benefit::VOTE_MESSAGE)
         } else {
             debug!(
@@ -311,6 +312,8 @@ where
         sender: &PeerId,
     ) -> Action<B::Hash> {
         let (round, set_id) = proof_block_num_and_set_id::<B, AuthorityId>(&proof);
+        // Later-set gossip must still identify peers that can serve historical mandatory proofs.
+        self.known_peers.lock().note_vote_for(*sender, round);
         let action = {
             let guard = self.gossip_filter.read();
 
@@ -353,7 +356,6 @@ where
         };
         if matches!(action, Action::Keep(_, _)) {
             self.gossip_filter.write().mark_round_as_proven(round);
-            self.known_peers.lock().note_vote_for(*sender, round);
         }
         action
     }
@@ -725,7 +727,7 @@ pub(crate) mod tests {
         assert!(matches!(res, ValidationResult::Discard));
         // nothing reported
         assert!(report_stream.try_next().is_err());
-        assert!(known_peers.lock().further_than(0).is_empty());
+        assert!(known_peers.lock().further_than(0).contains(&sender));
 
         gv.update_filter(GossipFilterCfg {
             start: 0,
@@ -833,7 +835,159 @@ pub(crate) mod tests {
         expected_report.cost_benefit = cost::INVALID_PROOF;
         expected_report.cost_benefit.value += cost::PER_SIGNATURE_CHECKED;
         assert_eq!(report_stream.try_next().unwrap().unwrap(), expected_report);
-        assert!(known_peers.lock().further_than(20).is_empty());
+        assert!(known_peers.lock().further_than(20).contains(&sender));
+    }
+
+    #[test]
+    fn cold_cross_set_gossip_discovers_historical_proof_peer() {
+        use crate::communication::request_response::{
+            outgoing_requests_engine::{OnDemandJustificationsEngine, ResponseInfo},
+            JustificationRequest,
+        };
+        use futures::channel::{mpsc, oneshot};
+        use sc_network::{
+            request_responses::{IfDisconnected, RequestFailure},
+            NetworkRequest, ProtocolName,
+        };
+
+        type PendingRequest = (
+            PeerId,
+            Vec<u8>,
+            oneshot::Sender<Result<(Vec<u8>, ProtocolName), RequestFailure>>,
+        );
+        struct RequestNetwork(mpsc::UnboundedSender<PendingRequest>);
+
+        #[async_trait::async_trait]
+        impl NetworkRequest for RequestNetwork {
+            async fn request(
+                &self,
+                _: PeerId,
+                _: ProtocolName,
+                _: Vec<u8>,
+                _: Option<(Vec<u8>, ProtocolName)>,
+                _: IfDisconnected,
+            ) -> Result<(Vec<u8>, ProtocolName), RequestFailure> {
+                unimplemented!("the on-demand engine uses start_request")
+            }
+
+            fn start_request(
+                &self,
+                peer: PeerId,
+                _: ProtocolName,
+                request: Vec<u8>,
+                _: Option<(Vec<u8>, ProtocolName)>,
+                response: oneshot::Sender<Result<(Vec<u8>, ProtocolName), RequestFailure>>,
+                _: IfDisconnected,
+            ) {
+                self.0.unbounded_send((peer, request, response)).unwrap();
+            }
+        }
+
+        let historical_set = ValidatorSet::new(vec![Keyring::Alice.public()], 0).unwrap();
+        let later_set = ValidatorSet::new(vec![Keyring::Bob.public()], 1).unwrap();
+        let mandatory_block = 5;
+        let mut later_vote = dummy_vote(20);
+        later_vote.commitment.validator_set_id = later_set.id();
+        later_vote.id = Keyring::Bob.public();
+        later_vote.signature = sign_commitment(&Keyring::Bob, &later_vote.commitment);
+        let mut claimed_vote = later_vote.clone();
+        claimed_vote.commitment.block_number = 21;
+
+        // Neither later-set gossip nor even a forged progress hint can authorize finality.
+        let hints: [GossipMessage<Block, ecdsa_crypto::AuthorityId>; 3] = [
+            GossipMessage::Vote(later_vote),
+            GossipMessage::FinalityProof(dummy_proof(20, &later_set)),
+            GossipMessage::Vote(claimed_vote),
+        ];
+        for hint in hints {
+            let known_peers = Arc::new(Mutex::new(KnownPeers::new()));
+            let (network, mut reports) = TestNetwork::new();
+            let gv = GossipValidator::<Block, _, ecdsa_crypto::AuthorityId>::new(
+                known_peers.clone(),
+                Arc::new(network),
+            );
+            gv.update_filter(GossipFilterCfg {
+                start: mandatory_block,
+                end: mandatory_block,
+                validator_set: &historical_set,
+            });
+            let (requests_tx, mut requests_rx) = mpsc::unbounded();
+            let protocol: ProtocolName = "/beefy/justifs/1".into();
+            let mut engine = OnDemandJustificationsEngine::<Block, ecdsa_crypto::AuthorityId>::new(
+                Arc::new(RequestNetwork(requests_tx)),
+                protocol.clone(),
+                known_peers,
+                None,
+            );
+            engine.request(mandatory_block, historical_set.clone());
+            assert!(requests_rx.try_next().is_err());
+
+            let sender = PeerId::random();
+            let mut context = TestContext::default();
+            assert!(matches!(
+                gv.validate(&mut context, &sender, &hint.encode()),
+                ValidationResult::Discard
+            ));
+            assert!(context.broadcast.is_none());
+            assert_eq!(
+                reports.try_next().unwrap().unwrap(),
+                PeerReport {
+                    who: sender,
+                    cost_benefit: cost::FUTURE_MESSAGE,
+                }
+            );
+
+            let historical_proof = dummy_proof(mandatory_block, &historical_set);
+            let mut bad_signature = historical_proof.clone();
+            match &mut bad_signature {
+                BeefyVersionedFinalityProof::<Block, ecdsa_crypto::AuthorityId>::V1(signed) => {
+                    signed.signatures =
+                        vec![Some(sign_commitment(&Keyring::Bob, &signed.commitment))];
+                }
+            }
+            let responses = [
+                (dummy_proof(mandatory_block + 1, &historical_set), false),
+                (dummy_proof(mandatory_block, &later_set), false),
+                (bad_signature, false),
+                (historical_proof.clone(), true),
+            ];
+            for (proof, valid) in responses {
+                engine.request(mandatory_block, historical_set.clone());
+                let (peer, encoded_request, response) = requests_rx
+                    .try_next()
+                    .expect("later-set gossip must discover a historical-proof request peer")
+                    .expect("request channel stays open");
+                assert_eq!(peer, sender);
+                assert_eq!(
+                    JustificationRequest::<Block>::decode_all(&mut &encoded_request[..])
+                        .unwrap()
+                        .begin,
+                    mandatory_block
+                );
+                response
+                    .send(Ok((proof.encode(), protocol.clone())))
+                    .unwrap();
+                match futures::executor::block_on(engine.next()) {
+                    ResponseInfo::ValidProof(proof, report) => {
+                        assert!(
+                            valid,
+                            "unverified progress must not bypass proof verification"
+                        );
+                        assert_eq!(proof.encode(), historical_proof.encode());
+                        assert_eq!(report.who, sender);
+                    }
+                    ResponseInfo::PeerReport(report) => {
+                        assert!(!valid, "the historical mandatory proof must be accepted");
+                        assert_eq!(report.who, sender);
+                        assert!(report.cost_benefit.value < 0);
+                    }
+                    ResponseInfo::Pending => panic!("the response was supplied synchronously"),
+                }
+            }
+            gv.peer_disconnected(&mut context, &sender);
+            engine.request(mandatory_block, historical_set.clone());
+            assert!(requests_rx.try_next().is_err());
+        }
     }
 
     #[test]
