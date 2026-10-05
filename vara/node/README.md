@@ -199,6 +199,10 @@ Vara 11000 predecessor, preserves the four existing keys and queued order, and
 adds placeholder BEEFY keys. Validators must replace those placeholders with real
 node keys before activation; they do not need to do so before the runtime upgrade.
 
+Missing BEEFY authority lists are initialized empty, and the current set gets
+a session mapping if absent. Existing BEEFY records and the activation block
+remain unchanged.
+
 Before activation, check the current, queued and eligible validators' BEEFY keys
 and bind `GearEthBridge.BridgeDomain` to the approved destination chain and original
 queue. On an existing chain, governance can use the existing Root

@@ -64,11 +64,27 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             .expect("invalid session-key state; reject the release in try-runtime");
         pallet_session::Pallet::<Runtime>::upgrade_keys::<SessionKeysOld, _>(migrate_keys);
 
-        // SDK iteration, translation and four removals/five ownership insertions.
-        reads = reads.saturating_add(registered.saturating_mul(2).saturating_add(2));
+        // Live upgrades do not run genesis builders. Materialize inactive SDK
+        // bookkeeping without activating BEEFY or replacing existing entries.
+        if !pallet_beefy::Authorities::<Runtime>::exists() {
+            pallet_beefy::Authorities::<Runtime>::set(Default::default());
+        }
+        if !pallet_beefy::NextAuthorities::<Runtime>::exists() {
+            pallet_beefy::NextAuthorities::<Runtime>::set(Default::default());
+        }
+        let set_id = pallet_beefy::ValidatorSetId::<Runtime>::get();
+        if !pallet_beefy::SetIdSession::<Runtime>::contains_key(set_id) {
+            pallet_beefy::SetIdSession::<Runtime>::insert(
+                set_id,
+                pallet_session::Pallet::<Runtime>::current_index(),
+            );
+        }
+
+        // SDK iteration/translation and up to five BEEFY initialization reads.
+        reads = reads.saturating_add(registered.saturating_mul(2).saturating_add(7));
         // Retain the prior derivation allowance; this is not benchmark evidence.
         reads = reads.saturating_add(registered.saturating_add(queued));
-        db_weight.reads_writes(reads, registered.saturating_mul(10).saturating_add(1))
+        db_weight.reads_writes(reads, registered.saturating_mul(10).saturating_add(4))
     }
 
     #[cfg(feature = "try-runtime")]
@@ -490,6 +506,7 @@ mod tests {
     fn session_keys_preserves_registered_queued_and_ownership_then_noops() {
         sp_io::TestExternalities::default().execute_with(|| {
             set_last_runtime_upgrade(11_000);
+            pallet_session::CurrentIndex::<Runtime>::put(17);
             let entries = [(validator(1), old_keys(1)), (validator(2), old_keys(2))];
             let queued_before = [(validator(2), old_keys(21)), (validator(1), old_keys(11))];
             seed_old_next_keys(&entries);
@@ -535,6 +552,10 @@ mod tests {
                     .as_ref(),
                 &[0]
             );
+            assert!(crate::Beefy::validator_set().is_none());
+            #[cfg(feature = "try-runtime")]
+            frame_support::assert_ok!(crate::Beefy::do_try_state());
+            assert_eq!(pallet_beefy::SetIdSession::<Runtime>::get(0), Some(17));
             #[cfg(feature = "try-runtime")]
             MigrateSessionKeys::post_upgrade(state).unwrap();
 
@@ -569,6 +590,41 @@ mod tests {
                 #[cfg(feature = "try-runtime")]
                 MigrateSessionKeys::post_upgrade(state).unwrap();
             }
+        });
+    }
+
+    #[test]
+    fn session_keys_preserves_existing_inactive_beefy_bookkeeping() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            set_last_runtime_upgrade(11_000);
+            pallet_session::CurrentIndex::<Runtime>::put(17);
+            let authorities = vec![current_keys(1).beefy].try_into().unwrap();
+            let next_authorities = vec![current_keys(2).beefy].try_into().unwrap();
+            pallet_beefy::Authorities::<Runtime>::set(authorities);
+            pallet_beefy::NextAuthorities::<Runtime>::set(next_authorities);
+            pallet_beefy::ValidatorSetId::<Runtime>::put(7);
+            pallet_beefy::SetIdSession::<Runtime>::insert(7, 11);
+            let before = (
+                pallet_beefy::Authorities::<Runtime>::get(),
+                pallet_beefy::NextAuthorities::<Runtime>::get(),
+                pallet_beefy::ValidatorSetId::<Runtime>::get(),
+                pallet_beefy::SetIdSession::<Runtime>::get(7),
+            );
+
+            MigrateSessionKeys::on_runtime_upgrade();
+
+            assert_eq!(
+                (
+                    pallet_beefy::Authorities::<Runtime>::get(),
+                    pallet_beefy::NextAuthorities::<Runtime>::get(),
+                    pallet_beefy::ValidatorSetId::<Runtime>::get(),
+                    pallet_beefy::SetIdSession::<Runtime>::get(7),
+                ),
+                before
+            );
+            assert_eq!(pallet_beefy::GenesisBlock::<Runtime>::get(), None);
+            #[cfg(feature = "try-runtime")]
+            frame_support::assert_ok!(crate::Beefy::do_try_state());
         });
     }
 
