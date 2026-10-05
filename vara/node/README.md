@@ -227,3 +227,7 @@ Do not change a live lane binding to introduce another destination.
 Use `release` for local builds and migration rehearsals. Reserve `production`
 for the actual release. Before proposing an upgrade on mainnet, qualify the final
 release Wasm against pinned full state and retain runtime-weight/capacity evidence.
+
+For this single-block-only runtime, use try-runtime with `--disable-mbm-checks`
+and retain `--checks all`. Its multi-block simulation fabricates the predecessor
+version; do not weaken the migration guard to accept that synthetic state.

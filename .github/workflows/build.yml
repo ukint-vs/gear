@@ -436,12 +436,14 @@ jobs:
         run: curl -o vara_ci.snap -L https://snapshots.vara.network/vara-mainnet.snap
 
       - name: "Test: on-runtime-upgrade"
+        # Vara has no multi-block migrator; keep the real predecessor for pre/post checks.
         run: >-
           ./try-runtime
           --runtime target/x86_64-unknown-linux-gnu/${{ matrix.profiles.name }}/wbuild/vara-runtime/vara_runtime.wasm
           on-runtime-upgrade
           --blocktime 3000
           --checks all
+          --disable-mbm-checks
           --disable-spec-version-check
           --no-weight-warnings
           snap -p vara_ci.snap

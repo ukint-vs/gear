@@ -113,5 +113,6 @@ pub fn config_endowed(extra_endowed: Vec<AccountId>) -> RuntimeGenesisConfig {
         gear_bank: GearBankConfig {
             _config: Default::default(),
         },
+        gear_eth_bridge: Default::default(),
     }
 }
