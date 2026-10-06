@@ -1,6 +1,6 @@
 # Gear Node
 
-Gear Substrate-based node, ready for hacking :rocket:
+Gear Substrate-based node, ready for hacking.
 
 Gear node is a key element of the Vara blockchain network. In a nutshell, it is a standard Substrate node with many low-level modules being used out-of-the-box, specifically, the consensus layer, libp2p networking etc. There are some modifications though, which cater to the specific needs of the Gear runtime as a platform for Wasm-based dApps. The most notable one is a custom block authorship logic brought to ensure that the main invariants the Gear protocol relies on, are upheld:
 - the messages queue is processed last in a block and the processing has enough time to run;
@@ -194,6 +194,12 @@ To run a Vara network validator, the node has to be started with the `--validato
 
 ### BEEFY upgrade and later activation
 
+Deploy compatible nodes and enable offchain indexing before the runtime upgrade.
+Use one runtime upgrade, then the standard governance activation call once ready.
+This follows the separation used by [Polkadot's BEEFY runtime introduction](https://github.com/polkadot-fellows/runtimes/pull/65)
+and later activation on [Kusama](https://kusama.subsquare.io/referenda/343) and
+[Polkadot](https://polkadot.subsquare.io/referenda/615). No activation-only Wasm upgrade is needed.
+
 The runtime upgrade leaves BEEFY inactive. The session-key migration supports the
 Vara 11000 predecessor, preserves the four existing keys and queued order, and
 adds placeholder BEEFY keys. Validators must replace those placeholders with real
@@ -215,6 +221,13 @@ BEEFY-only session-key changes preserve the original bridge queue. Actual GRANDP
 authority changes retain the existing delayed queue rollover. Do not reset bridge
 storage, the MMR, custody or public-chain genesis as part of BEEFY activation.
 
+While a session clear is pending, shared enqueue rejects all senders, including
+governance, with `BridgeCleanupRequired`. The builtin reports that the queue needs
+cleanup. Rejected sends preserve the queue and nonce; retry after the delayed clear.
+Overflow reset rejects with `InvalidQueueReset` after an append in the current block.
+Wait for root finalization and a GRANDPA proof covering the latest overflow block.
+Governance retains its pause and capacity exemptions outside the pending-clear window.
+
 The bridge pallet continues to own the original queue, message nonce and history.
 The runtime commits its snapshot using leaf-extra version 2:
 `2 || "vara" || bridgeDomain[32] || parentTimestampLE[8] || initialized[1] || queueIdLE[8] || root[32]`.
@@ -231,6 +244,9 @@ Do not change a live lane binding to introduce another destination.
 Use `release` for local builds and migration rehearsals. Reserve `production`
 for the actual release. Before proposing an upgrade on mainnet, qualify the final
 release Wasm against pinned full state and retain runtime-weight/capacity evidence.
+The enqueue weight includes a manual allowance for the cleanup guard's additional
+read and proof size. Rebenchmark on reference hardware before release; this allowance
+does not replace the existing weight and 1000-validator capacity qualification.
 
 For this single-block-only runtime, use try-runtime with `--disable-mbm-checks`
 and retain `--checks all`. Its multi-block simulation fabricates the predecessor

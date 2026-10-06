@@ -276,6 +276,12 @@ impl<T: Config> Pallet<T> {
             Error::<T>::BridgeIsNotYetInitialized
         );
 
+        // A pending session reset must not discard newly accepted messages.
+        ensure!(
+            !ClearTimer::<T>::exists(),
+            Error::<T>::BridgeCleanupRequired
+        );
+
         let from_governance = Self::ensure_admin_or_pauser(source).is_ok();
 
         // Ensuring that pallet isn't paused if it's not forced from governance.

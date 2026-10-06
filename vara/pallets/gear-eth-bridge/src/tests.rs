@@ -699,6 +699,84 @@ fn bridge_incorrect_value_applied_err() {
 }
 
 #[test]
+fn bridge_pending_cleanup_rejects_messages_and_refunds_builtin_value() {
+    for source in [SIGNER, MockBridgeAdminAccount::get()] {
+        new_test_ext().execute_with(|| {
+            run_to_block(WHEN_INITIALIZED);
+            assert_ok!(Balances::force_set_balance(
+                RuntimeOrigin::root(),
+                source,
+                ENDOWMENT,
+            ));
+            assert_ok!(GearEthBridge::set_fee(
+                RuntimeOrigin::root(),
+                MockTransportFee::get(),
+            ));
+            assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
+            run_to_block(ERA_BLOCKS * 2 + 1);
+            assert_eq!(crate::ClearTimer::<Test>::get(), Some(1));
+
+            let nonce = MessageNonce::get();
+            let queue_id = QueueId::<Test>::get();
+            assert_noop!(
+                GearEthBridge::send_eth_message(
+                    RuntimeOrigin::signed(source),
+                    H160::repeat_byte(1),
+                    vec![1],
+                ),
+                Error::BridgeCleanupRequired
+            );
+
+            let source_balance = balance_of(&source);
+            let builtin_balance = balance_of(&MockBridgeBuiltinAddress::get());
+            let mut gas_meter = GasSpentMeter::start();
+            let request = Request::SendEthMessage {
+                destination: H160::repeat_byte(1),
+                payload: vec![1],
+            };
+            let (_, _, code) = run_block_with_builtin_call(
+                source,
+                request.clone(),
+                None,
+                MockTransportFee::get() + 42,
+            );
+            assert_eq!(
+                code,
+                ReplyCode::Error(ErrorReplyReason::Execution(
+                    SimpleExecutionError::UserspacePanic,
+                ))
+            );
+            assert_eq!(balance_of(&source), source_balance - gas_meter.spent());
+            assert_eq!(
+                balance_of(&MockBridgeBuiltinAddress::get()),
+                builtin_balance
+            );
+            assert_eq!(MessageNonce::get(), nonce);
+            assert!(!System::events().iter().any(|record| matches!(
+                record.event,
+                RuntimeEvent::GearEthBridge(Event::MessageQueued { .. })
+            )));
+            assert_eq!(QueueId::<Test>::get(), queue_id + 1);
+
+            let (reply, _, code) =
+                run_block_with_builtin_call(source, request, None, MockTransportFee::get());
+            assert_eq!(code, ReplyCode::Success(SuccessReplyReason::Manual));
+            let Response::EthMessageQueued {
+                nonce: accepted_nonce,
+                hash,
+                queue_id: accepted_queue,
+                ..
+            } = Response::decode(&mut reply.as_slice()).unwrap();
+            assert_eq!(accepted_nonce, nonce);
+            assert_eq!(accepted_queue, queue_id + 1);
+            let proof = GearEthBridge::merkle_proof(hash).expect("accepted message has a proof");
+            assert_eq!(proof.root, hash);
+            assert_eq!(proof.leaf, hash);
+        });
+    }
+}
+
+#[test]
 fn bridge_value_returned() {
     init_logger();
     new_test_ext().execute_with(|| {

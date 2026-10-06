@@ -1148,8 +1148,8 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
     let genesis = sp_core::H256::repeat_byte(0x99);
     let timestamp1 = SLOT_DURATION;
     let timestamp2 = 2 * SLOT_DURATION;
-    let (key, expected_extra, expected_authorities_root, old_id, first_root) =
-        ext.execute_with(|| {
+    let (key, expected_extra, expected_authorities_root, old_id, first_root, hash) = ext
+        .execute_with(|| {
             frame_system::BlockHash::<Runtime>::insert(0, genesis);
             let alice = session_validator(&alice);
             let bob = session_validator(&bob);
@@ -1175,18 +1175,25 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
                 sp_core::H160::repeat_byte(2),
                 vec![4, 5, 6],
             ));
+            let first_root = last_bridge_message().1;
+            assert_ok!(GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(alice.0.clone()),
+                sp_core::H160::repeat_byte(3),
+                vec![7, 8, 9],
+            ));
+            let (_, hash) = last_bridge_message();
             GearEthBridge::on_finalize(1);
             assert_ok!(Timestamp::set(RuntimeOrigin::none(), timestamp1));
             Timestamp::on_finalize(1);
             Babe::on_finalize(1);
-            let (old_id, first_root) = GearEthBridge::bridge_snapshot().unwrap();
+            let (old_id, root) = GearEthBridge::bridge_snapshot().unwrap();
             assert_eq!(
                 GearEthBridge::bridge_domain(),
                 "0x9aac6d72e183672d20696112082accb15719870152120212f541e3e233837944"
                     .parse()
                     .expect("bridge domain fixture is valid"),
             );
-            assert_ne!(GearEthBridge::bridge_domain(), genesis);
+            assert_ne!(root, sp_core::H256::zero());
             let expected_extra = bridge_leaf::VaraBridgeProvider::extra_data();
             assert_eq!(
                 expected_extra,
@@ -1198,7 +1205,7 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
                         &timestamp1.to_le_bytes(),
                         &[1],
                         &old_id.to_le_bytes(),
-                        first_root.as_bytes(),
+                        root.as_bytes(),
                     ]
                     .concat()
                 )
@@ -1227,6 +1234,7 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
                 expected_authorities_root,
                 old_id,
                 first_root,
+                hash,
             )
         });
 
@@ -1250,22 +1258,14 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
             bridge_leaf::VaraBridgeProvider::extra_data(),
             leaf.leaf_extra
         );
-        assert_ok!(GearEthBridge::send_eth_message(
-            RuntimeOrigin::signed(alice.0.clone()),
-            sp_core::H160::repeat_byte(3),
-            vec![7, 8, 9],
-        ));
-        let hash = System::events()
-            .into_iter()
-            .rev()
-            .find_map(|record| match record.event {
-                RuntimeEvent::GearEthBridge(pallet_gear_eth_bridge::Event::MessageQueued {
-                    hash,
-                    ..
-                }) => Some(hash),
-                _ => None,
-            })
-            .expect("second message was queued");
+        assert_noop!(
+            GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(alice.0.clone()),
+                sp_core::H160::repeat_byte(3),
+                vec![7, 8, 9],
+            ),
+            pallet_gear_eth_bridge::Error::<Runtime>::BridgeCleanupRequired
+        );
         GearEthBridge::on_finalize(2);
         let proof = GearEthBridge::merkle_proof(hash).expect("final message has a proof");
         assert_eq!(proof.leaf, hash);
@@ -1417,5 +1417,311 @@ fn beefy_only_session_changes_preserve_the_original_bridge_queue() {
             assert_eq!(GearEthBridge::bridge_snapshot(), Some(original));
             assert_eq!(pallet_mmr::RootHash::<Runtime>::get(), mmr_root);
             assert_eq!(pallet_mmr::NumberOfLeaves::<Runtime>::get(), leaves);
+        });
+}
+
+fn last_bridge_message() -> (pallet_gear_eth_bridge::EthMessage, sp_core::H256) {
+    System::events()
+        .into_iter()
+        .rev()
+        .find_map(|record| match record.event {
+            RuntimeEvent::GearEthBridge(pallet_gear_eth_bridge::Event::MessageQueued {
+                message,
+                hash,
+            }) => Some((message, hash)),
+            _ => None,
+        })
+        .expect("message was queued")
+}
+
+#[test]
+fn scheduled_governance_send_at_session_clear_is_rejected_without_losing_nonce() {
+    use frame_support::traits::{
+        OneSessionHandler, StorePreimage,
+        schedule::{DispatchTime, v3::Anon},
+    };
+    use pallet_session::SessionHandler;
+    use sp_runtime::traits::Hash;
+
+    let alice = bridge_test_authority(AccountKeyring::Alice, "Alice");
+    let bob = bridge_test_authority(AccountKeyring::Bob, "Bob");
+    ExtBuilder::default()
+        .initial_authorities(vec![alice.clone()])
+        .stash(STASH)
+        .build()
+        .execute_with(|| {
+            let alice = session_validator(&alice);
+            let bob = session_validator(&bob);
+            <GearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
+                true,
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+            );
+            let governance = [
+                GearEthBridgeAdminAccount::get(),
+                GearEthBridgePauserAccount::get(),
+            ];
+            assert_ok!(GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(governance[0].clone()),
+                sp_core::H160::repeat_byte(1),
+                vec![1],
+            ));
+            assert_eq!(last_bridge_message().0.nonce(), sp_core::U256::zero());
+            GearEthBridge::on_finalize(1);
+            let original = GearEthBridge::bridge_snapshot().unwrap();
+            assert_ne!(original.1, sp_core::H256::zero());
+            assert_ok!(Timestamp::set(RuntimeOrigin::none(), SLOT_DURATION));
+            Timestamp::on_finalize(1);
+            Babe::on_finalize(1);
+
+            let tasks = governance
+                .iter()
+                .map(|account| {
+                    <Scheduler as Anon<BlockNumber, RuntimeCall, OriginCaller>>::schedule(
+                        DispatchTime::At(3),
+                        None,
+                        0,
+                        frame_system::RawOrigin::Signed(account.clone()).into(),
+                        Preimage::bound(RuntimeCall::GearEthBridge(
+                            pallet_gear_eth_bridge::Call::send_eth_message {
+                                destination: sp_core::H160::repeat_byte(2),
+                                payload: vec![2],
+                            },
+                        ))
+                        .unwrap(),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            initialize_block(2);
+            let _ = <Babe as pallet_session::ShouldEndSession<BlockNumber>>::should_end_session(2);
+            <VaraSessionHandler as SessionHandler<AccountId>>::on_new_session(
+                true,
+                std::slice::from_ref(&bob),
+                std::slice::from_ref(&bob),
+            );
+            <AllPalletsWithSystem as OnInitialize<BlockNumberFor<Runtime>>>::on_initialize(2);
+            assert_eq!(GearEthBridge::bridge_snapshot(), Some(original));
+            GearEthBridge::on_finalize(2);
+            assert_ok!(Timestamp::set(RuntimeOrigin::none(), 2 * SLOT_DURATION));
+            Timestamp::on_finalize(2);
+            Babe::on_finalize(2);
+
+            initialize_block(3);
+            System::reset_events();
+            // Runtime ordering runs Scheduler before the bridge's delayed clear.
+            <AllPalletsWithSystem as OnInitialize<BlockNumberFor<Runtime>>>::on_initialize(3);
+            let dispatches = System::events()
+                .into_iter()
+                .filter_map(|record| match record.event {
+                    RuntimeEvent::Scheduler(pallet_scheduler::Event::Dispatched {
+                        task,
+                        result,
+                        ..
+                    }) => Some((task, result)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                dispatches,
+                tasks
+                    .into_iter()
+                    .map(|task| (
+                        task,
+                        Err(pallet_gear_eth_bridge::Error::<Runtime>::BridgeCleanupRequired.into()),
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            assert!(!System::events().iter().any(|record| matches!(
+                record.event,
+                RuntimeEvent::GearEthBridge(pallet_gear_eth_bridge::Event::MessageQueued { .. })
+            )));
+            assert_eq!(
+                GearEthBridge::bridge_snapshot(),
+                Some((original.0 + 1, sp_core::H256::zero()))
+            );
+
+            let hashes = governance
+                .into_iter()
+                .enumerate()
+                .map(|(index, account)| {
+                    assert_ok!(GearEthBridge::send_eth_message(
+                        RuntimeOrigin::signed(account),
+                        sp_core::H160::repeat_byte(3),
+                        vec![3],
+                    ));
+                    let (message, hash) = last_bridge_message();
+                    assert_eq!(message.nonce(), sp_core::U256::from(index + 1));
+                    hash
+                })
+                .collect::<Vec<_>>();
+            GearEthBridge::on_finalize(3);
+            let root = Keccak256::hash(&[hashes[0].as_bytes(), hashes[1].as_bytes()].concat());
+            assert_eq!(
+                GearEthBridge::bridge_snapshot(),
+                Some((original.0 + 1, root))
+            );
+            for (index, hash) in hashes.iter().enumerate() {
+                let proof = GearEthBridge::merkle_proof(*hash).unwrap();
+                assert_eq!(proof.leaf, *hash);
+                assert_eq!(proof.leaf_index, index as u64);
+                assert_eq!(proof.number_of_leaves, 2);
+                assert_eq!(proof.proof, vec![hashes[1 - index]]);
+                assert_eq!(proof.root, root);
+            }
+        });
+}
+
+#[test]
+fn governance_append_requires_newer_real_grandpa_proof_before_overflow_reset() {
+    use frame_support::traits::OneSessionHandler;
+    use sp_runtime::traits::Header as _;
+
+    fn finality_proof(header: &Header) -> Vec<u8> {
+        let pair = ed25519::Pair::from_string("//Alice", None).unwrap();
+        let round = 1;
+        let precommit = sp_consensus_grandpa::Precommit::<Header> {
+            target_hash: header.hash(),
+            target_number: *header.number(),
+        };
+        let payload = sp_consensus_grandpa::localized_payload(
+            round,
+            Grandpa::current_set_id(),
+            &sp_consensus_grandpa::Message::<Header>::Precommit(precommit.clone()),
+        );
+        // SCALE's signed-precommit tuple avoids adding a finality-grandpa dependency.
+        let signed = (
+            precommit,
+            pair.sign(&payload),
+            GrandpaId::from(pair.public()),
+        )
+            .encode();
+        let justification = sp_consensus_grandpa::GrandpaJustification::<Header> {
+            round,
+            commit: sp_consensus_grandpa::Commit::<Header> {
+                target_hash: header.hash(),
+                target_number: *header.number(),
+                precommits: vec![Decode::decode(&mut signed.as_slice()).unwrap()],
+            },
+            votes_ancestries: vec![],
+        };
+        // FinalityProof's public wire format: block, encoded justification, unknown headers.
+        (header.hash(), justification.encode(), Vec::<Header>::new()).encode()
+    }
+
+    let alice = bridge_test_authority(AccountKeyring::Alice, "Alice");
+    ExtBuilder::default()
+        .initial_authorities(vec![alice.clone()])
+        .stash(STASH)
+        .build()
+        .execute_with(|| {
+            let alice = session_validator(&alice);
+            <GearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
+                true,
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+                [(&alice.0, alice.1.grandpa.clone())].into_iter(),
+            );
+            assert_eq!(
+                Grandpa::grandpa_authorities(),
+                vec![(alice.1.grandpa.clone(), 1)]
+            );
+            assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
+            let admin = GearEthBridgeAdminAccount::get();
+            let capacity = <Runtime as pallet_gear_eth_bridge::Config>::QueueCapacity::get();
+            for _ in 0..capacity {
+                assert_ok!(GearEthBridge::send_eth_message(
+                    RuntimeOrigin::signed(admin.clone()),
+                    sp_core::H160::repeat_byte(4),
+                    vec![4],
+                ));
+            }
+            GearEthBridge::on_finalize(1);
+            let original = GearEthBridge::bridge_snapshot().unwrap();
+            assert_ok!(Timestamp::set(RuntimeOrigin::none(), SLOT_DURATION));
+            Timestamp::on_finalize(1);
+            Babe::on_finalize(1);
+            let older_proof = finality_proof(&System::finalize());
+            assert_eq!(
+                GearEthBridge::verify_finality_proof(older_proof.clone()),
+                Some(1)
+            );
+
+            initialize_block(2);
+            Babe::on_initialize(2);
+            assert_noop!(
+                GearEthBridge::send_eth_message(
+                    RuntimeOrigin::signed(alice.0.clone()),
+                    sp_core::H160::repeat_byte(5),
+                    vec![5],
+                ),
+                pallet_gear_eth_bridge::Error::<Runtime>::BridgeCleanupRequired
+            );
+            assert_ok!(GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(admin.clone()),
+                sp_core::H160::repeat_byte(6),
+                vec![6],
+            ));
+            let (accepted, hash) = last_bridge_message();
+            assert_eq!(accepted.nonce(), sp_core::U256::from(capacity));
+            assert_noop!(
+                GearEthBridge::reset_overflowed_queue(
+                    RuntimeOrigin::signed(alice.0.clone()),
+                    older_proof.clone(),
+                ),
+                pallet_gear_eth_bridge::Error::<Runtime>::InvalidQueueReset
+            );
+            assert_eq!(GearEthBridge::bridge_snapshot(), Some(original));
+            assert_eq!(
+                GearEthBridge::merkle_proof(hash).unwrap().number_of_leaves,
+                u64::from(capacity) + 1
+            );
+
+            GearEthBridge::on_finalize(2);
+            let accepted_proof = GearEthBridge::merkle_proof(hash).unwrap();
+            assert_eq!(
+                GearEthBridge::bridge_snapshot(),
+                Some((original.0, accepted_proof.root))
+            );
+            assert_ne!(accepted_proof.root, original.1);
+            assert_ok!(Timestamp::set(RuntimeOrigin::none(), 2 * SLOT_DURATION));
+            Timestamp::on_finalize(2);
+            Babe::on_finalize(2);
+            let newer_proof = finality_proof(&System::finalize());
+            assert_eq!(
+                GearEthBridge::verify_finality_proof(older_proof.clone()),
+                Some(1)
+            );
+            assert_eq!(
+                GearEthBridge::verify_finality_proof(newer_proof.clone()),
+                Some(2)
+            );
+
+            initialize_block(3);
+            assert_noop!(
+                GearEthBridge::reset_overflowed_queue(
+                    RuntimeOrigin::signed(alice.0.clone()),
+                    older_proof,
+                ),
+                pallet_gear_eth_bridge::Error::<Runtime>::InvalidQueueReset
+            );
+            assert_eq!(GearEthBridge::merkle_proof(hash), Some(accepted_proof));
+            assert_ok!(GearEthBridge::reset_overflowed_queue(
+                RuntimeOrigin::signed(alice.0),
+                newer_proof,
+            ));
+            assert_eq!(
+                GearEthBridge::bridge_snapshot(),
+                Some((original.0 + 1, sp_core::H256::zero()))
+            );
+            assert!(GearEthBridge::merkle_proof(hash).is_none());
+            assert_ok!(GearEthBridge::send_eth_message(
+                RuntimeOrigin::signed(admin),
+                sp_core::H160::repeat_byte(7),
+                vec![7],
+            ));
+            assert_eq!(
+                last_bridge_message().0.nonce(),
+                sp_core::U256::from(capacity + 1)
+            );
         });
 }

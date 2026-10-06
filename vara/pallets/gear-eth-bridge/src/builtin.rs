@@ -101,7 +101,7 @@ where
 
 pub fn error_to_str<T: Config>(error: &Error<T>) -> &'static str {
     match error {
-        Error::BridgeCleanupRequired => "Send message: bridge queue overflowed and needs cleanup",
+        Error::BridgeCleanupRequired => "Send message: bridge queue needs cleanup",
         Error::BridgeIsNotYetInitialized => "Send message: bridge is not yet initialized",
         Error::BridgeIsPaused => "Send message: bridge is paused",
         Error::MaxPayloadSizeExceeded => "Send message: message max payload size exceeded",

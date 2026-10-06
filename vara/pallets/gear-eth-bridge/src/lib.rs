@@ -425,6 +425,9 @@ pub mod pallet {
         ) -> DispatchResultWithPostInfo {
             ensure_signed(origin)?;
 
+            // The proof must cover the root after the most recent append.
+            ensure!(!QueueChanged::<T>::get(), Error::<T>::InvalidQueueReset);
+
             Self::reset_overflowed_queue_impl(encoded_finality_proof)?;
 
             Ok(Pays::No.into())
