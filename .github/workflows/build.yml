@@ -644,6 +644,8 @@ jobs:
 
   unix:
     needs: [dynamic-matrix, workspace]
+    # Optional macOS and Linux ARM targets can leave this matrix empty.
+    if: ${{ needs.dynamic-matrix.outputs.unix-targets != '[]' }}
     uses: ./.github/workflows/build-unix.yml
     secrets: inherit
     with:
