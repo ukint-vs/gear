@@ -312,10 +312,10 @@ mod tests {
 
         let validators = ValidatorSet::<ecdsa_crypto::AuthorityId>::new(
             vec![
-                Keyring::Alice.public(),
-                Keyring::Bob.public(),
                 Keyring::Charlie.public(),
                 Keyring::Eve.public(),
+                Keyring::Alice.public(),
+                Keyring::Bob.public(),
             ],
             Default::default(),
         )
@@ -361,10 +361,10 @@ mod tests {
             VoteImportResult::RoundConcluded(SignedCommitment {
                 commitment,
                 signatures: vec![
-                    Some(Keyring::<ecdsa_crypto::AuthorityId>::Alice.sign(b"I am committed")),
-                    Some(Keyring::<ecdsa_crypto::AuthorityId>::Bob.sign(b"I am committed")),
                     Some(Keyring::<ecdsa_crypto::AuthorityId>::Charlie.sign(b"I am committed")),
                     None,
+                    Some(Keyring::<ecdsa_crypto::AuthorityId>::Alice.sign(b"I am committed")),
+                    Some(Keyring::<ecdsa_crypto::AuthorityId>::Bob.sign(b"I am committed")),
                 ]
             })
         );

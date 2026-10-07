@@ -31,6 +31,8 @@ members = [
   "substrate/runtime-executor/wasmtime",
   "substrate/sc-mixnet",
   "substrate/sc-consensus-beefy",
+  "substrate/pallet-beefy",
+  "substrate/pallet-session",
   "substrate/sp-allocator",
   "substrate/sp-runtime-interface-proc-macro",
   "substrate/sp-wasm-interface",
@@ -480,6 +482,7 @@ pallet-referenda = { version = "38.0.0", git = "https://github.com/paritytech/po
 pallet-scheduler = { version = "39.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
 pallet-session = { version = "38.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
 pallet-staking = { version = "38.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
+pallet-staking-reward-curve = { version = "12.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c" }
 pallet-staking-runtime-api = { version = "24.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
 pallet-staking-reward-fn = { version = "22.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
 pallet-sudo = { version = "38.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
@@ -776,6 +779,8 @@ wasm-instrument = { version = "0.4.0", git = "https://github.com/gear-tech/wasm-
 wasm-smith = { version = "0.230", git = "https://github.com/gear-tech/wasm-tools", branch = "gear-stable-1.230" }
 
 [patch."https://github.com/paritytech/polkadot-sdk.git"]
+pallet-beefy = { path = "substrate/pallet-beefy" }
+pallet-session = { path = "substrate/pallet-session" }
 sc-consensus-beefy = { path = "substrate/sc-consensus-beefy" }
 sc-cli = { path = "substrate/cli" }
 sc-rpc-server = { path = "substrate/rpc-servers" }

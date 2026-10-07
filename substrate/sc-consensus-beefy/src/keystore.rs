@@ -382,6 +382,49 @@ pub mod tests {
     }
 
     #[test]
+    fn inserted_keys_keep_old_authorities_available_in_validator_order() {
+        let store = keystore();
+        let alice = Keyring::<ecdsa_crypto::AuthorityId>::Alice.public();
+        let bob = Keyring::<ecdsa_crypto::AuthorityId>::Bob.public();
+        let beefy_store: BeefyKeystore<ecdsa_crypto::AuthorityId> = Some(store.clone()).into();
+
+        store
+            .insert(
+                sp_application_crypto::KeyTypeId(*b"test"),
+                "//Alice",
+                alice.as_ref(),
+            )
+            .unwrap();
+        assert_eq!(beefy_store.authority_id(&[alice.clone()]), None);
+        store
+            .insert(BEEFY_KEY_TYPE, "//Alice", alice.as_ref())
+            .unwrap();
+        store.insert(BEEFY_KEY_TYPE, "//Bob", bob.as_ref()).unwrap();
+
+        // Rotation does not remove the old key needed for a lagging mandatory round.
+        assert_eq!(
+            beefy_store.authority_id(&[alice.clone()]),
+            Some(alice.clone())
+        );
+        assert_eq!(
+            beefy_store.authority_id(&[bob.clone(), alice.clone()]),
+            Some(bob.clone())
+        );
+        assert_eq!(
+            beefy_store.authority_id(&[alice.clone(), bob.clone()]),
+            Some(alice.clone())
+        );
+        for authority in [alice, bob] {
+            let signature = beefy_store.sign(&authority, b"mandatory handover").unwrap();
+            assert!(BeefyKeystore::verify(
+                &authority,
+                &signature,
+                b"mandatory handover"
+            ));
+        }
+    }
+
+    #[test]
     fn authority_id_works_for_ecdsa() {
         authority_id_works::<ecdsa_crypto::AuthorityId>();
     }

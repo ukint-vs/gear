@@ -279,6 +279,7 @@ impl sp_runtime::traits::Convert<AccountId, Option<<Test as pallet_session::Conf
 }
 
 impl pallet_session::Config for Test {
+    type KeyRegistration = ();
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = <Self as frame_system::Config>::AccountId;
     type ValidatorIdOf = Convert;
@@ -306,6 +307,7 @@ impl SortedMembers<AccountId> for MockBridgeAdminAccounts {
 }
 
 impl pallet_gear_eth_bridge::Config for Test {
+    type DestinationBindingAllowed = frame_support::traits::ConstBool<true>;
     type AdminOrigin = EnsureSignedBy<MockBridgeAdminAccounts, AccountId>;
     type PalletId = GearEthBridgePalletId;
     type BuiltinAddress = MockBridgeBuiltinAddress;

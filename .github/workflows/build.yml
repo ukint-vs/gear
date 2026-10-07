@@ -36,6 +36,25 @@ env:
   DOCKER_BUILD_SUMMARY: false
 
 jobs:
+  beefy-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "ACTIONS: Checkout"
+        uses: actions/checkout@v7
+
+      - name: "Install: Node.js"
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: "Install: Pinned validator tools"
+        run: npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
+
+      - name: "Test: Offline validator proofs and local-only smoke guard"
+        run: npm test --prefix scripts
+
   dynamic-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -128,7 +147,7 @@ jobs:
           echo "unix-targets=${unix_targets}" >> $GITHUB_OUTPUT
 
   gear-cli:
-    needs: dynamic-matrix
+    needs: [dynamic-matrix, beefy-tools]
     strategy:
       fail-fast: false
       matrix:
@@ -158,15 +177,76 @@ jobs:
 
       - name: "Build: Prepare artifact"
         run: |
-          mkdir -p artifact/wbuild/vara-runtime
+          mkdir -p artifact/wbuild/vara-runtime artifact/beefy-validator-tools/scripts
           cp target/${{ matrix.targets.target }}/release/gear* artifact/
           cp target/${{ matrix.targets.target }}/release/wbuild/vara-runtime/*.wasm artifact/wbuild/vara-runtime/
+          cp scripts/package.json scripts/package-lock.json scripts/beefy-session-proof.mjs \
+            scripts/beefy-activation-smoke.mjs scripts/beefy-tools.test.mjs artifact/beefy-validator-tools/scripts/
+          cp beefy-deployment.md beefy-migration.md artifact/beefy-validator-tools/
 
       - name: "ACTIONS: Upload node and VARA runtime"
         uses: actions/upload-artifact@v7
         with:
           name: gear-cli-and-runtime-release-${{ matrix.targets.target }}
           path: artifact
+
+      - name: "Install: Node.js for disposable BEEFY smoke"
+        if: matrix.targets.name == 'linux-x86_64'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: "Install: Pinned smoke dependencies"
+        if: matrix.targets.name == 'linux-x86_64'
+        run: npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
+
+      - name: "Build: Isolated fast-runtime BEEFY smoke node"
+        if: matrix.targets.name == 'linux-x86_64'
+        env:
+          CARGO_TARGET_DIR: target/beefy-smoke
+          WASM_BUILD_TYPE: release
+        run: cargo build -p gear-cli --release --locked --features fast-runtime
+
+      - name: "Test: Fresh two-validator BEEFY activation, rotation and purge"
+        if: matrix.targets.name == 'linux-x86_64'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          base=$(mktemp -d "$RUNNER_TEMP/beefy-smoke.XXXXXX")
+          mkdir -p beefy-smoke-logs
+          node=target/beefy-smoke/${CARGO_BUILD_TARGET}/release/gear
+          alice_pid='' bob_pid=''
+          trap 'kill ${alice_pid:-} ${bob_pid:-} 2>/dev/null || true; wait || true' EXIT
+          common=(--chain local --validator --unsafe-force-node-key-generation --force-authoring
+            --enable-offchain-indexing true --rpc-methods unsafe --no-mdns --no-prometheus)
+          "$node" "${common[@]}" --alice --base-path "$base/alice" --port 30333 --rpc-port 9944 \
+            > beefy-smoke-logs/alice.log 2>&1 &
+          alice_pid=$!
+          wait_rpc() {
+            timeout 120 bash -s "$1" <<'RPC'
+          until curl --fail --silent --max-time 2 -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"system_localPeerId","params":[]}' "$1" \
+            | jq -er '.result | select(type == "string")'; do sleep 1; done
+          RPC
+          }
+          alice_peer=$(wait_rpc http://127.0.0.1:9944)
+          "$node" "${common[@]}" --bob --base-path "$base/bob" --port 30334 --rpc-port 9945 \
+            --bootnodes "/ip4/127.0.0.1/tcp/30333/p2p/$alice_peer" \
+            > beefy-smoke-logs/bob.log 2>&1 &
+          bob_pid=$!
+          wait_rpc http://127.0.0.1:9945
+          node scripts/beefy-activation-smoke.mjs ws://127.0.0.1:9944 ws://127.0.0.1:9945 \
+            | tee beefy-smoke-logs/proof.json
+
+      - name: "ACTIONS: Upload BEEFY smoke evidence"
+        if: ${{ !cancelled() && matrix.targets.name == 'linux-x86_64' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: beefy-activation-smoke
+          path: beefy-smoke-logs
+          if-no-files-found: error
 
   ethexe-cli:
     needs: dynamic-matrix
@@ -426,14 +506,26 @@ jobs:
 
       - name: "Install: try-runtime CLI"
         run: |
-          curl -sL https://github.com/paritytech/try-runtime-cli/releases/download/v0.8.0/try-runtime-x86_64-unknown-linux-musl -o try-runtime
+          curl --fail --show-error --location https://github.com/paritytech/try-runtime-cli/releases/download/v0.10.1/try-runtime-x86_64-unknown-linux-musl -o try-runtime
           chmod +x ./try-runtime
 
       - name: "Build: Vara mainnet runtime"
         run: cargo build -p vara-runtime -F std,try-runtime --locked ${{ matrix.profiles.flags }}
 
-      - name: "Test: Download Vara Mainnet snapshot"
-        run: curl -o vara_ci.snap -L https://snapshots.vara.network/vara-mainnet.snap
+      - name: "Test: Create finalized Vara Mainnet snapshot"
+        run: |
+          # Require the real predecessor and pin every scrape request to one finalized block.
+          block=$(curl --fail --silent --show-error https://rpc.vara.network \
+            -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"chain_getFinalizedHead","params":[]}' \
+            | jq -er '.result | select(type == "string")')
+          request=$(jq -cn --arg block "$block" \
+            '{jsonrpc:"2.0",id:1,method:"state_getRuntimeVersion",params:[$block]}')
+          curl --fail --silent --show-error https://rpc.vara.network \
+            -H 'Content-Type: application/json' --data "$request" \
+            | jq -e '.result | .specName == "vara" and .specVersion == 11000'
+          echo "Creating exact-predecessor mainnet snapshot at $block"
+          ./try-runtime create-snapshot vara_ci.snap --uri wss://rpc.vara.network --at "$block"
 
       - name: "Test: on-runtime-upgrade"
         # Vara has no multi-block migrator; keep the real predecessor for pre/post checks.
@@ -444,8 +536,6 @@ jobs:
           --blocktime 3000
           --checks all
           --disable-mbm-checks
-          --disable-spec-version-check
-          --no-weight-warnings
           snap -p vara_ci.snap
 
   fuzzer:

@@ -5,28 +5,37 @@
 //! activating BEEFY. Placeholders retain the legacy derivation and must be replaced
 //! before governance activation. Release try-runtime must reject an unsupported
 //! predecessor: a production validation panic halts execution, not a safe upgrade.
+//!
+//! Rebuilds the current and queued historical commitments with five keys. Their
+//! original roots remain available for already-issued ownership proofs, but only
+//! while the corresponding historical sessions remain unpruned. Older commitments
+//! are unchanged. Later roots commit the activated queue, never mutable registrations.
+//! Release try-runtime checks both root formats and all three key phases.
 
-use crate::{AuthorityDiscovery, Babe, BeefyId, Grandpa, ImOnline, Runtime, SessionKeys};
+use crate::{
+    AuthorityDiscovery, Babe, BeefyId, Grandpa, ImOnline, Runtime, SessionKeys,
+    pallet_session_historical,
+    session_history::{ActiveSessionKeys, HistoricalRoot, LegacySessionRoots},
+};
 use frame_support::{
     ensure, storage::StoragePrefixedMap, traits::OnRuntimeUpgrade, weights::Weight,
 };
-use parity_scale_codec::DecodeAll;
-#[cfg(any(test, feature = "try-runtime"))]
-use parity_scale_codec::Encode;
+use parity_scale_codec::{Decode, DecodeAll};
 use sp_runtime::{
     impl_opaque_keys,
     traits::{Hash, Keccak256, OpaqueKeys},
 };
 use sp_std::prelude::*;
 
+#[cfg(any(test, feature = "try-runtime"))]
+use {crate::Historical, parity_scale_codec::Encode};
+
 #[cfg(feature = "try-runtime")]
-use {
-    parity_scale_codec::Decode, sp_runtime::TryRuntimeError,
-    sp_std::collections::btree_map::BTreeMap,
-};
+use {sp_runtime::TryRuntimeError, sp_std::collections::btree_map::BTreeMap};
 
 const PREDECESSOR_SPEC_VERSION: u32 = 11_000;
 const MIGRATION_SPEC_VERSION: u32 = 2_01_00;
+type HistoricalUpdate = (u32, HistoricalRoot, HistoricalRoot);
 
 impl_opaque_keys! {
     /// Mirrors the exact supported four-key predecessor.
@@ -38,7 +47,7 @@ impl_opaque_keys! {
     }
 }
 
-fn placeholder_beefy_key(validator: &crate::AccountId) -> BeefyId {
+pub(crate) fn placeholder_beefy_key(validator: &crate::AccountId) -> BeefyId {
     let hash = Keccak256::hash(validator.as_ref());
     let mut bytes = [0u8; 33];
     bytes[0] = 0x02;
@@ -60,9 +69,21 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
 
         // The SDK skips invalid map values and ignores queued translation failures.
         // Validate all input before its first write; a failure must halt, never skip.
-        let (registered, queued) = validate_legacy_storage(&mut reads)
+        let (registered, _) = validate_legacy_storage(&mut reads)
             .expect("invalid session-key state; reject the release in try-runtime");
+        let pending = u32::try_from(registered)
+            .expect("too many legacy key owners; reject the release in try-runtime");
+        let active = active_keys(&mut reads)
+            .expect("invalid active session keys; reject the release in try-runtime");
+        let historical = historical_updates(&mut reads, &active)
+            .expect("invalid historical session state; reject the release in try-runtime");
         pallet_session::Pallet::<Runtime>::upgrade_keys::<SessionKeysOld, _>(migrate_keys);
+        crate::beefy_activation::PendingRegistrations::put(pending);
+        ActiveSessionKeys::put(active);
+        for (index, legacy, updated) in historical.into_iter().flatten() {
+            LegacySessionRoots::insert(index, legacy);
+            pallet_session_historical::HistoricalSessions::<Runtime>::insert(index, updated);
+        }
 
         // Live upgrades do not run genesis builders. Materialize inactive SDK
         // bookkeeping without activating BEEFY or replacing existing entries.
@@ -80,11 +101,15 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             );
         }
 
-        // SDK iteration/translation and up to five BEEFY initialization reads.
-        reads = reads.saturating_add(registered.saturating_mul(2).saturating_add(7));
-        // Retain the prior derivation allowance; this is not benchmark evidence.
-        reads = reads.saturating_add(registered.saturating_add(queued));
-        db_weight.reads_writes(reads, registered.saturating_mul(10).saturating_add(4))
+        // Keep trie headroom, but never hide permissionless registry growth from upgrade checks.
+        let writes = registered.saturating_mul(10).saturating_add(10);
+        let reads = reads
+            .saturating_add(registered.saturating_mul(2))
+            .saturating_add(8);
+        <Runtime as frame_system::Config>::BlockWeights::get()
+            .max_block
+            .saturating_div(2)
+            .saturating_add(db_weight.reads_writes(reads, writes))
     }
 
     #[cfg(feature = "try-runtime")]
@@ -95,6 +120,16 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             sp_io::storage::get(&pallet_beefy::GenesisBlock::<Runtime>::hashed_key())
                 .map(|bytes| bytes.to_vec());
         validate_beefy_genesis(beefy_genesis.as_deref(), migrate)?;
+        let active = if migrate {
+            active_keys(&mut reads)?
+        } else {
+            ActiveSessionKeys::get()
+        };
+        let historical = if migrate {
+            historical_updates(&mut reads, &active)?
+        } else {
+            [None; 2]
+        };
 
         let mut owners = BTreeMap::new();
         inspect_map(
@@ -153,11 +188,19 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             })
             .transpose()?;
 
+        let pending_registrations = if migrate {
+            u32::try_from(registered.len()).map_err(|_| "too many legacy key owners")?
+        } else {
+            crate::beefy_activation::PendingRegistrations::get()
+        };
         Ok(SessionKeysSnapshot {
             registered,
             queued,
             owners,
             beefy_genesis,
+            historical,
+            active,
+            pending_registrations,
         }
         .encode())
     }
@@ -166,6 +209,14 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
     fn post_upgrade(state: Vec<u8>) -> Result<(), TryRuntimeError> {
         let expected = SessionKeysSnapshot::decode_all(&mut &state[..])
             .map_err(|_| "pre_upgrade provided an invalid or trailing snapshot")?;
+        ensure!(
+            ActiveSessionKeys::get() == expected.active,
+            "active session keys changed"
+        );
+        ensure!(
+            crate::beefy_activation::PendingRegistrations::get() == expected.pending_registrations,
+            "unproven legacy key count changed"
+        );
         let mut reads = 0;
         let mut registered = Vec::new();
         inspect_map(
@@ -216,6 +267,16 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             beefy_genesis == expected.beefy_genesis,
             "BEEFY activation changed during preparation"
         );
+        for (index, legacy, updated) in expected.historical.into_iter().flatten() {
+            ensure!(
+                LegacySessionRoots::get(index) == Some(legacy),
+                "legacy historical commitment changed"
+            );
+            ensure!(
+                Historical::historical_root(index) == Some(updated),
+                "five-key historical commitment changed"
+            );
+        }
         Ok(())
     }
 }
@@ -227,6 +288,89 @@ struct SessionKeysSnapshot {
     queued: Option<Vec<u8>>,
     owners: BTreeMap<Vec<u8>, Vec<u8>>,
     beefy_genesis: Option<Vec<u8>>,
+    historical: [Option<HistoricalUpdate>; 2],
+    active: Vec<(crate::AccountId, SessionKeys)>,
+    pending_registrations: u32,
+}
+
+fn historical_updates(
+    reads: &mut u64,
+    active: &[(crate::AccountId, SessionKeys)],
+) -> Result<[Option<HistoricalUpdate>; 2], &'static str> {
+    *reads = reads.saturating_add(1);
+    let current = pallet_session::Pallet::<Runtime>::current_index();
+    let queued = current.checked_add(1).ok_or("session index overflow")?;
+    let mut updates = [None; 2];
+    for (update, index) in updates.iter_mut().zip([current, queued]) {
+        *reads = reads.saturating_add(1);
+        let Some(bytes) = sp_io::storage::get(&pallet_session_historical::HistoricalSessions::<
+            Runtime,
+        >::hashed_key_for(index)) else {
+            ensure!(active.is_empty(), "missing boundary historical commitment");
+            continue;
+        };
+        let legacy = HistoricalRoot::decode_all(&mut &bytes[..])
+            .map_err(|_| "invalid historical session root")?;
+        *reads = reads.saturating_add(2);
+        let queued_keys;
+        let (keys, era) = if index == current {
+            (active, crate::Staking::active_era().map(|era| era.index))
+        } else {
+            queued_keys = sp_io::storage::get(&pallet_session::QueuedKeys::<Runtime>::hashed_key())
+                .map(|bytes| decode_old_queue(&bytes))
+                .transpose()?
+                .into_iter()
+                .flatten()
+                .map(|(owner, keys)| (owner.clone(), migrate_keys(owner, keys)))
+                .collect::<Vec<_>>();
+            (&queued_keys[..], crate::Staking::current_era())
+        };
+        ensure!(
+            keys.is_empty() || era.is_some(),
+            "missing staking era for active authorities"
+        );
+        *reads = reads.saturating_add(keys.len() as u64);
+        *update = Some((index, legacy, crate::session_history::root(keys, era)));
+    }
+    Ok(updates)
+}
+
+fn active_keys(reads: &mut u64) -> Result<Vec<(crate::AccountId, SessionKeys)>, &'static str> {
+    *reads = reads.saturating_add(5);
+    fn list<T: Decode>(pallet: &[u8], item: &[u8]) -> Result<Vec<T>, &'static str> {
+        sp_io::storage::get(&frame_support::storage::storage_prefix(pallet, item))
+            .map(|bytes| {
+                Vec::<T>::decode_all(&mut &bytes[..])
+                    .map_err(|_| "invalid active authority storage")
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+    let validators = list::<crate::AccountId>(b"Session", b"Validators")?;
+    let babe = list::<(sp_consensus_babe::AuthorityId, u64)>(b"Babe", b"Authorities")?;
+    let grandpa = list::<(sp_consensus_grandpa::AuthorityId, u64)>(b"Grandpa", b"Authorities")?;
+    let online = list::<pallet_im_online::sr25519::AuthorityId>(b"ImOnline", b"Keys")?;
+    let discovery = list::<sp_authority_discovery::AuthorityId>(b"AuthorityDiscovery", b"Keys")?;
+    ensure!(
+        [babe.len(), grandpa.len(), online.len(), discovery.len()]
+            .iter()
+            .all(|count| *count == validators.len()),
+        "active authority lengths do not match session validators"
+    );
+    Ok(validators
+        .into_iter()
+        .enumerate()
+        .map(|(i, owner)| {
+            let keys = SessionKeys {
+                babe: babe[i].0.clone(),
+                grandpa: grandpa[i].0.clone(),
+                im_online: online[i].clone(),
+                authority_discovery: discovery[i].clone(),
+                beefy: placeholder_beefy_key(&owner),
+            };
+            (owner, keys)
+        })
+        .collect())
 }
 
 fn should_migrate(reads: &mut u64) -> Result<bool, &'static str> {
@@ -269,6 +413,11 @@ fn should_migrate(reads: &mut u64) -> Result<bool, &'static str> {
             && crate::VERSION.spec_version == MIGRATION_SPEC_VERSION,
         "unsupported session-key migration version"
     );
+    inspect_map(
+        &crate::beefy_activation::RegisteredKeys::final_prefix(),
+        reads,
+        |_, _, _| Err("unexpected modern key proof on the four-key predecessor"),
+    )?;
     Ok(true)
 }
 
@@ -437,9 +586,11 @@ fn migrate_keys(validator: crate::AccountId, old: SessionKeysOld) -> SessionKeys
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BeefyId;
+    use crate::{BeefyId, session_history::SessionKeyOwnerProof};
+    use frame_support::traits::KeyOwnerProofSystem;
     use sp_core::Pair;
-    use sp_runtime::StateVersion;
+    use sp_runtime::{StateVersion, traits::BlakeTwo256};
+    use sp_trie::{LayoutV0, Trie, TrieDBBuilder};
 
     fn validator(seed: u8) -> crate::AccountId {
         crate::AccountId::new([seed; 32])
@@ -502,6 +653,316 @@ mod tests {
         assert_eq!(keys.authority_discovery, old.authority_discovery);
     }
 
+    type OwnedProof = (
+        sp_core::crypto::KeyTypeId,
+        Vec<u8>,
+        sp_session::MembershipProof,
+        pallet_session_historical::IdentificationTuple<Runtime>,
+    );
+
+    fn legacy_history(
+        entries: &[(crate::AccountId, SessionKeysOld)],
+        era: u32,
+        session: u32,
+    ) -> (HistoricalRoot, Vec<OwnedProof>) {
+        use sp_trie::{
+            MemoryDB, Recorder, TrieMut, recorder_ext::RecorderExt, trie_types::TrieDBMutBuilderV0,
+        };
+        let mut db = MemoryDB::<BlakeTwo256>::default();
+        let mut root = Default::default();
+        {
+            let mut trie = TrieDBMutBuilderV0::<BlakeTwo256>::new(&mut db, &mut root).build();
+            for (position, (account, keys)) in entries.iter().enumerate() {
+                for key_type in SessionKeysOld::key_ids() {
+                    trie.insert(
+                        &(*key_type, keys.get_raw(*key_type)).encode(),
+                        &(position as u32).encode(),
+                    )
+                    .unwrap();
+                }
+                let exposure = pallet_staking::Pallet::<Runtime>::eras_stakers(era, account);
+                trie.insert(&(position as u32).encode(), &(account, exposure).encode())
+                    .unwrap();
+            }
+        }
+        let mut proofs = Vec::new();
+        for (account, keys) in entries {
+            for key_type in [sp_consensus_babe::KEY_TYPE, sp_consensus_grandpa::KEY_TYPE] {
+                let raw = keys.get_raw(key_type).to_vec();
+                let mut recorder = Recorder::<LayoutV0<BlakeTwo256>>::new();
+                {
+                    let trie = TrieDBBuilder::<LayoutV0<BlakeTwo256>>::new(&db, &root)
+                        .with_recorder(&mut recorder)
+                        .build();
+                    let index = trie.get(&(key_type, &raw[..]).encode()).unwrap().unwrap();
+                    trie.get(&index).unwrap().unwrap();
+                }
+                proofs.push((
+                    key_type,
+                    raw,
+                    sp_session::MembershipProof {
+                        session,
+                        trie_nodes: recorder.into_raw_storage_proof(),
+                        validator_count: entries.len() as u32,
+                    },
+                    (
+                        account.clone(),
+                        pallet_staking::Pallet::<Runtime>::eras_stakers(era, account),
+                    ),
+                ));
+            }
+        }
+        ((root, entries.len() as u32), proofs)
+    }
+
+    fn assert_owned_proofs(proofs: &[OwnedProof]) {
+        for (key_type, raw, proof, owner) in proofs {
+            assert_eq!(
+                SessionKeyOwnerProof::check_proof((*key_type, raw), proof.clone()),
+                Some(owner.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn session_keys_historical_proofs_survive_rotations_and_era_boundary() {
+        for (new_era, pending) in [(false, false), (false, true), (true, false), (true, true)] {
+            sp_io::TestExternalities::default().execute_with(|| {
+                set_last_runtime_upgrade(PREDECESSOR_SPEC_VERSION);
+                crate::System::set_block_number(1);
+                pallet_session::CurrentIndex::<Runtime>::put(17);
+                let entries = [(validator(1), old_keys(1)), (validator(2), old_keys(2))];
+                let queued = if pending {
+                    [(validator(2), old_keys(22)), (validator(1), old_keys(11))]
+                } else {
+                    [(validator(2), old_keys(2)), (validator(1), old_keys(1))]
+                };
+                let registered = if pending {
+                    [(validator(1), old_keys(31)), (validator(2), old_keys(32))]
+                } else {
+                    entries.clone()
+                };
+                seed_old_next_keys(&registered);
+                seed_old_queued_keys(&queued);
+                <(Babe, Grandpa, ImOnline, AuthorityDiscovery) as pallet_session::SessionHandler<
+                    crate::AccountId,
+                >>::on_genesis_session(&entries);
+                pallet_session::Validators::<Runtime>::put(
+                    entries
+                        .iter()
+                        .map(|(account, _)| account.clone())
+                        .collect::<Vec<_>>(),
+                );
+                pallet_session::QueuedChanged::<Runtime>::put(true);
+                pallet_staking::ActiveEra::<Runtime>::put(pallet_staking::ActiveEraInfo {
+                    index: 0,
+                    start: None,
+                });
+                let queued_era = u32::from(new_era);
+                pallet_staking::CurrentEra::<Runtime>::put(queued_era);
+                pallet_staking::ErasStartSessionIndex::<Runtime>::insert(0, 0);
+                if new_era {
+                    pallet_staking::ErasStartSessionIndex::<Runtime>::insert(1, 18);
+                }
+                pallet_staking::ForceEra::<Runtime>::put(pallet_staking::Forcing::ForceNone);
+                frame_support::storage::unhashed::put(
+                    &frame_support::storage::storage_prefix(b"Staking", b"BondedEras"),
+                    &vec![(0u32, 0u32)],
+                );
+                for era in 0..=queued_era {
+                    for (account, _) in &entries {
+                        pallet_staking::ErasStakers::<Runtime>::insert(
+                            era,
+                            account,
+                            pallet_staking::Exposure {
+                                total: 200 * (era as u128 + 1),
+                                own: 100 * (era as u128 + 1),
+                                others: vec![pallet_staking::IndividualExposure {
+                                    who: validator(99),
+                                    value: 100 * (era as u128 + 1),
+                                }],
+                            },
+                        );
+                    }
+                }
+                let (current_root, legacy_current) = legacy_history(&entries, 0, 17);
+                let (queued_root, legacy_queued) = legacy_history(&queued, queued_era, 18);
+                for (index, root) in [(16, current_root), (17, current_root), (18, queued_root)] {
+                    pallet_session_historical::HistoricalSessions::<Runtime>::insert(index, root);
+                }
+                pallet_session_historical::StoredRange::<Runtime>::put((16, 19));
+                let mut older = legacy_current.clone();
+                for (_, _, proof, _) in &mut older {
+                    proof.session = 16;
+                }
+                #[cfg(feature = "try-runtime")]
+                let state = MigrateSessionKeys::pre_upgrade().unwrap();
+                MigrateSessionKeys::on_runtime_upgrade();
+                #[cfg(feature = "try-runtime")]
+                {
+                    MigrateSessionKeys::post_upgrade(state.clone()).unwrap();
+                    for legacy in [false, true] {
+                        let original = if legacy {
+                            LegacySessionRoots::get(17)
+                        } else {
+                            Historical::historical_root(17)
+                        }
+                        .unwrap();
+                        let corrupt = (sp_core::H256::repeat_byte(99), original.1);
+                        if legacy {
+                            LegacySessionRoots::insert(17, corrupt);
+                        } else {
+                            pallet_session_historical::HistoricalSessions::<Runtime>::insert(
+                                17, corrupt,
+                            );
+                        }
+                        assert!(MigrateSessionKeys::post_upgrade(state.clone()).is_err());
+                        if legacy {
+                            LegacySessionRoots::insert(17, original);
+                        } else {
+                            pallet_session_historical::HistoricalSessions::<Runtime>::insert(
+                                17, original,
+                            );
+                        }
+                    }
+                }
+                assert_owned_proofs(&older);
+                assert_owned_proofs(&legacy_current);
+                for (kind, key, proof, _) in &legacy_queued {
+                    assert!(
+                        SessionKeyOwnerProof::check_proof((*kind, key), proof.clone()).is_none()
+                    );
+                }
+
+                let mut current = Vec::new();
+                for (account, old) in &entries {
+                    let keys = migrate_keys(account.clone(), old.clone());
+                    for key_type in [
+                        sp_consensus_babe::KEY_TYPE,
+                        sp_consensus_grandpa::KEY_TYPE,
+                        sp_consensus_beefy::KEY_TYPE,
+                    ] {
+                        let raw = keys.get_raw(key_type).to_vec();
+                        let proof = SessionKeyOwnerProof::prove((key_type, &raw)).unwrap();
+                        current.push((
+                            key_type,
+                            raw,
+                            proof,
+                            (
+                                account.clone(),
+                                pallet_staking::Pallet::<Runtime>::eras_stakers(0, account),
+                            ),
+                        ));
+                    }
+                }
+                assert_owned_proofs(&current);
+                let (key_type, raw, proof, _) = &legacy_current[0];
+                let mut wrong_count = proof.clone();
+                wrong_count.validator_count += 1;
+                let mut duplicate = proof.clone();
+                duplicate.trie_nodes.push(duplicate.trie_nodes[0].clone());
+                let mut unused = proof.clone();
+                unused.trie_nodes.push(vec![99]);
+                for invalid in [wrong_count, duplicate, unused] {
+                    assert_eq!(
+                        SessionKeyOwnerProof::check_proof((*key_type, raw), invalid),
+                        None
+                    );
+                }
+                assert_eq!(
+                    SessionKeyOwnerProof::check_proof((*key_type, vec![99; 32]), proof.clone()),
+                    None
+                );
+
+                crate::Session::rotate_session();
+                assert_eq!(crate::Session::current_index(), 18);
+                assert_owned_proofs(&older);
+                assert_owned_proofs(&legacy_current);
+                assert_owned_proofs(&legacy_queued);
+                assert_owned_proofs(&current);
+                let account = validator(1);
+                let keys = migrate_keys(account.clone(), queued[1].1.clone());
+                let mut next = Vec::new();
+                for key_type in [
+                    sp_consensus_babe::KEY_TYPE,
+                    sp_consensus_grandpa::KEY_TYPE,
+                    sp_consensus_beefy::KEY_TYPE,
+                ] {
+                    let raw = keys.get_raw(key_type).to_vec();
+                    next.push((
+                        key_type,
+                        raw.clone(),
+                        SessionKeyOwnerProof::prove((key_type, &raw)).unwrap(),
+                        (
+                            account.clone(),
+                            pallet_staking::Pallet::<Runtime>::eras_stakers(queued_era, &account),
+                        ),
+                    ));
+                }
+                assert_owned_proofs(&next);
+                crate::System::set_block_number(2);
+                crate::Session::rotate_session();
+                assert_eq!(crate::Session::current_index(), 19);
+                assert_owned_proofs(&legacy_current);
+                assert_owned_proofs(&legacy_queued);
+                assert_owned_proofs(&current);
+                assert_owned_proofs(&next);
+                for (owner, keys) in ActiveSessionKeys::get() {
+                    for kind in SessionKeys::key_ids() {
+                        let proof =
+                            SessionKeyOwnerProof::prove((*kind, keys.get_raw(*kind))).unwrap();
+                        assert_eq!(
+                            SessionKeyOwnerProof::check_proof((*kind, keys.get_raw(*kind)), proof)
+                                .unwrap()
+                                .0,
+                            owner
+                        );
+                    }
+                }
+
+                Historical::prune_up_to(18);
+                for (key_type, raw, proof, _) in legacy_current.iter().chain(&current).chain(&older)
+                {
+                    assert_eq!(
+                        SessionKeyOwnerProof::check_proof((*key_type, raw), proof.clone()),
+                        None
+                    );
+                }
+                assert_owned_proofs(&legacy_queued);
+                assert_owned_proofs(&next);
+            });
+        }
+    }
+
+    #[test]
+    fn session_keys_historical_corruption_rejects_before_any_write() {
+        let mut keys = vec![
+            pallet_session_historical::HistoricalSessions::<Runtime>::hashed_key_for(0),
+            crate::beefy_activation::RegisteredKeys::hashed_key_for(validator(1)),
+        ];
+        for (pallet, item) in [
+            (b"Session".as_slice(), b"Validators".as_slice()),
+            (b"Babe", b"Authorities"),
+            (b"Grandpa", b"Authorities"),
+            (b"ImOnline", b"Keys"),
+            (b"AuthorityDiscovery", b"Keys"),
+        ] {
+            keys.push(frame_support::storage::storage_prefix(pallet, item).to_vec());
+        }
+        for key in keys {
+            sp_io::TestExternalities::default().execute_with(|| {
+                set_last_runtime_upgrade(PREDECESSOR_SPEC_VERSION);
+                seed_old_next_keys(&[(validator(1), old_keys(1))]);
+                sp_io::storage::set(&key, &[1]);
+                let before = sp_io::storage::root(StateVersion::V1);
+                #[cfg(feature = "try-runtime")]
+                assert!(MigrateSessionKeys::pre_upgrade().is_err());
+                assert!(std::panic::catch_unwind(MigrateSessionKeys::on_runtime_upgrade).is_err());
+                assert_eq!(sp_io::storage::root(StateVersion::V1), before);
+            });
+        }
+    }
+
     #[test]
     fn session_keys_preserves_registered_queued_and_ownership_then_noops() {
         sp_io::TestExternalities::default().execute_with(|| {
@@ -556,8 +1017,14 @@ mod tests {
             #[cfg(feature = "try-runtime")]
             frame_support::assert_ok!(crate::Beefy::do_try_state());
             assert_eq!(pallet_beefy::SetIdSession::<Runtime>::get(0), Some(17));
+            assert_eq!(crate::beefy_activation::PendingRegistrations::get(), 2);
             #[cfg(feature = "try-runtime")]
-            MigrateSessionKeys::post_upgrade(state).unwrap();
+            {
+                crate::beefy_activation::PendingRegistrations::put(0);
+                assert!(MigrateSessionKeys::post_upgrade(state.clone()).is_err());
+                crate::beefy_activation::PendingRegistrations::put(2);
+                MigrateSessionKeys::post_upgrade(state).unwrap();
+            }
 
             for (index, (account, _)) in entries.iter().enumerate() {
                 let mut keys = pallet_session::NextKeys::<Runtime>::get(account).unwrap();

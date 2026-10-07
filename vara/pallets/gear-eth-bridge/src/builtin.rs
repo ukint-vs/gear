@@ -107,6 +107,7 @@ pub fn error_to_str<T: Config>(error: &Error<T>) -> &'static str {
         Error::MaxPayloadSizeExceeded => "Send message: message max payload size exceeded",
         Error::InsufficientValueApplied => "Send message: insufficient value applied",
         Error::InvalidQueueReset => "Reset overflowed queue: invalid proof or not overflowed",
+        Error::InvalidDestinationBinding => "Bind destination: invalid or already bound lane",
         Error::__Ignore(_, _) => unreachable!("never constructed"),
     }
 }

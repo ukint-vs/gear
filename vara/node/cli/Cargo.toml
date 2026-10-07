@@ -63,6 +63,7 @@ substrate-build-script-utils.workspace = true
 
 [features]
 default = ["vara-native"]
+fast-runtime = ["vara-native", "vara-runtime/fast-runtime", "service/fast-runtime"]
 vara-native = [
 	"vara-runtime",
 	"service/vara-native",

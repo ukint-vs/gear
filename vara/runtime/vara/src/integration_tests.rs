@@ -1399,21 +1399,15 @@ fn beefy_only_session_changes_preserve_the_original_bridge_queue() {
                 sp_runtime::DispatchError::BadOrigin,
             );
 
-            let domain = sp_core::H256::repeat_byte(7);
-            assert_ok!(Utility::batch_all(
-                RuntimeOrigin::root(),
-                vec![
-                    RuntimeCall::System(frame_system::Call::set_storage {
-                        items: vec![(
-                            pallet_gear_eth_bridge::BridgeDomain::<Runtime>::hashed_key().to_vec(),
-                            domain.encode(),
-                        )],
-                    }),
-                    RuntimeCall::Beefy(pallet_beefy::Call::set_new_genesis { delay_in_blocks: 1 }),
-                ],
-            ));
-            assert_eq!(pallet_beefy::GenesisBlock::<Runtime>::get(), Some(5));
-            assert_eq!(GearEthBridge::bridge_domain(), domain);
+            // A raw domain write alone must not admit unsigned or unactivated keys.
+            assert_noop!(
+                Utility::batch_all(
+                    RuntimeOrigin::root(),
+                    vec![RuntimeCall::Beefy(pallet_beefy::Call::set_new_genesis { delay_in_blocks: 1 })],
+                ).map_err(|error| error.error),
+                sp_runtime::DispatchError::BadOrigin,
+            );
+            assert_eq!(pallet_beefy::GenesisBlock::<Runtime>::get(), None);
             assert_eq!(GearEthBridge::bridge_snapshot(), Some(original));
             assert_eq!(pallet_mmr::RootHash::<Runtime>::get(), mmr_root);
             assert_eq!(pallet_mmr::NumberOfLeaves::<Runtime>::get(), leaves);

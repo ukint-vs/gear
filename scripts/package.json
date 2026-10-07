@@ -1,0 +1,19 @@
+{
+  "name": "vara-beefy-validator-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later WITH Classpath-exception-2.0",
+  "engines": { "node": ">=22" },
+  "packageManager": "npm@10.9.3",
+  "scripts": {
+    "test": "node --test beefy-tools.test.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.7",
+    "@polkadot/api": "17.0.2",
+    "@polkadot/keyring": "14.0.3",
+    "@polkadot/util": "14.0.3",
+    "@polkadot/util-crypto": "14.0.3"
+  }
+}

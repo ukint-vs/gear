@@ -3375,7 +3375,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -12892,20 +12892,27 @@ dependencies = [
 [[package]]
 name = "pallet-beefy"
 version = "39.0.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
+ "frame-election-provider-support",
  "frame-support",
  "frame-system",
  "log",
  "pallet-authorship",
+ "pallet-balances",
+ "pallet-offences",
  "pallet-session",
+ "pallet-staking",
+ "pallet-staking-reward-curve",
+ "pallet-timestamp",
  "parity-scale-codec",
  "scale-info",
- "serde",
  "sp-consensus-beefy",
+ "sp-core",
+ "sp-io",
  "sp-runtime",
  "sp-session",
  "sp-staking",
+ "sp-state-machine",
 ]
 
 [[package]]
@@ -13771,7 +13778,6 @@ dependencies = [
 [[package]]
 name = "pallet-session"
 version = "38.0.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
  "frame-support",
  "frame-system",
@@ -13809,6 +13815,17 @@ dependencies = [
  "sp-io",
  "sp-runtime",
  "sp-staking",
+]
+
+[[package]]
+name = "pallet-staking-reward-curve"
+version = "12.0.0"
+source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
+dependencies = [
+ "proc-macro-crate 3.4.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -20953,6 +20970,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 name = "vara-runtime"
 version = "2.0.0"
 dependencies = [
+ "binary-merkle-tree 16.1.1",
  "const-str 0.5.7",
  "frame-benchmarking",
  "frame-election-provider-support",
@@ -21041,6 +21059,7 @@ dependencies = [
  "sp-inherents",
  "sp-io",
  "sp-keyring",
+ "sp-keystore",
  "sp-mmr-primitives",
  "sp-offchain",
  "sp-runtime",
@@ -21050,6 +21069,7 @@ dependencies = [
  "sp-std",
  "sp-storage",
  "sp-transaction-pool",
+ "sp-trie",
  "sp-version",
  "substrate-build-script-utils",
  "substrate-wasm-builder",

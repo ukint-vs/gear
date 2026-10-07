@@ -258,6 +258,11 @@ finalized the transition). In such case BEEFY must "catch up" the previous sessi
 conclude rounds for mandatory blocks. Note that older sessions must obviously be finalized by the
 validator set at that point in time, not the latest/current one.
 
+Validators must retain earlier BEEFY private keys until the corresponding mandatory blocks have
+proofs. Restart catch-up preserves validator-set order, including key-only changes; signature
+positions follow that order, not keystore order. Equivocation reporting accepts only the active
+voting set and requests ownership at the equivocation block, then submits at the best block.
+
 ### Initial Sync
 
 It's all rainbows and unicorns when the node is fully synced with the network. However during cold

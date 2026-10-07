@@ -2016,10 +2016,11 @@ pub(crate) mod tests {
             .lock()
             .is_empty());
 
-        // now let's try with old set it
-        let mut old_proof = good_proof.clone();
-        old_proof.first.commitment.validator_set_id = 0;
-        old_proof.second.commitment.validator_set_id = 0;
+        // A correctly signed proof from another set must not use the active set's ownership proof.
+        let old_proof = generate_double_voting_proof(
+            (block_num, payload1.clone(), 0, &Keyring::Bob),
+            (block_num, payload2.clone(), 0, &Keyring::Bob),
+        );
         // old proofs are simply ignored
         assert_eq!(worker.report_double_voting(old_proof), Ok(()));
         // verify nothing reported to runtime

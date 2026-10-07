@@ -18,6 +18,8 @@ Local Cargo package names intentionally stay compatible with upstream package na
 | `substrate/runtime-executor` | `sc-executor` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/cli` | `sc-cli` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/sc-consensus-beefy` | `sc-consensus-beefy` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
+| `substrate/pallet-beefy` | `pallet-beefy` | not published by Gear | Apache-2.0 |
+| `substrate/pallet-session` | `pallet-session` | not published by Gear | Apache-2.0 |
 | `substrate/rpc-servers` | `sc-rpc-server` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/service` | `sc-service` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/substrate-wasm-builder` | `substrate-wasm-builder` | `gsubstrate-wasm-builder` | Apache-2.0 |
@@ -27,6 +29,14 @@ The local BEEFY client backports [Polkadot SDK #12812](https://github.com/parity
 Gear also carries raw-buffer gossip rebroadcast fixes and signed-proof/MMR regression coverage. Peer progress remains an untrusted discovery hint so lagging nodes can request historical proofs; returned proofs are verified against the requested round and authority set.
 
 Restart initialization reads the current finalized state before waiting for another finality notification. Recovery replays the exact persisted mandatory vote without re-signing, stops header catch-up at BEEFY genesis, and restores the finalized RPC head. These changes do not alter the persisted SCALE schema. The remaining SDK stays pinned to the source reference above.
+
+The local BEEFY pallet adds a configurable argument-aware activation origin and
+validation weight, avoiding a root-dispatch call-filter bypass. The local session
+pallet adds caller/validator-bound registration and purge hooks, without cloning
+key bundles, and marks queued sets changed when a purged validator shortens them.
+Both hooks default to upstream behavior so other SDK runtimes/mocks remain
+compatible; Vara explicitly supplies the secure guards. Associated type defaults
+use the workspace-pinned nightly compiler.
 
 ## Gear Compatibility Crates
 

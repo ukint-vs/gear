@@ -107,8 +107,8 @@ where
         Ok(proved_offenders)
     }
 
-    /// Report the given equivocation to the BEEFY runtime module. This method
-    /// generates a session membership proof of the offender and then submits an
+    /// Report an equivocation from the active voting set to the BEEFY runtime module.
+    /// This method generates a session membership proof of the offender and then submits an
     /// extrinsic to report the equivocation. In particular, the session membership
     /// proof must be generated at the block at which the given set was active which
     /// isn't necessarily the best block if there are pending authority set changes.
@@ -125,7 +125,9 @@ where
             (active_rounds.validators(), active_rounds.validator_set_id());
         let offender_id = proof.offender_id();
 
-        if !check_double_voting_proof::<_, _, BeefySignatureHasher>(&proof) {
+        if proof.first.commitment.validator_set_id != validator_set_id
+            || !check_double_voting_proof::<_, _, BeefySignatureHasher>(&proof)
+        {
             debug!(target: LOG_TARGET, "🥩 Skipping report for bad equivocation {:?}", proof);
             return Ok(());
         }

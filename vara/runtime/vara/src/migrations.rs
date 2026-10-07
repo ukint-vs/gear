@@ -5,6 +5,9 @@ use crate::Runtime;
 
 mod session_keys;
 pub use session_keys::MigrateSessionKeys;
+#[cfg(feature = "runtime-benchmarks")]
+pub(crate) use session_keys::SessionKeysOld;
+pub(crate) use session_keys::placeholder_beefy_key;
 
 /// All migrations that will run on the next runtime upgrade for dev chain.
 #[cfg(feature = "dev")]

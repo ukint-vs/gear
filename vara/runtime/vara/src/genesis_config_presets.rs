@@ -115,11 +115,10 @@ pub fn testnet_genesis(
             epoch_config: BABE_GENESIS_EPOCH_CONFIG,
             ..Default::default()
         },
-        // Development chains exercise the production BEEFY/MMR path from genesis
-        // before mainnet activation.
+        // Bind the destination and prove operational keys before governance activation.
         beefy: BeefyConfig {
             authorities: vec![],
-            genesis_block: Some(1),
+            genesis_block: None,
         },
         #[cfg(feature = "dev")]
         sudo: SudoConfig {

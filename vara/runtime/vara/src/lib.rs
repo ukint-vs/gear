@@ -134,8 +134,12 @@ mod bag_thresholds;
 pub mod governance;
 use governance::{GeneralAdmin, StakingAdmin, Treasurer, TreasurySpender, pallet_custom_origins};
 
+mod beefy_activation;
+#[cfg(feature = "runtime-benchmarks")]
+mod beefy_benchmarks;
 mod bridge_leaf;
 mod migrations;
+mod session_history;
 
 // By this we assert if runtime compiled with "dev" feature.
 #[cfg_attr(
@@ -287,8 +291,12 @@ impl pallet_babe::Config for Runtime {
     type MaxNominators = MaxNominators;
 
     type KeyOwnerProof = sp_session::MembershipProof;
-    type EquivocationReportSystem =
-        pallet_babe::EquivocationReportSystem<Self, Offences, Historical, ReportLongevity>;
+    type EquivocationReportSystem = pallet_babe::EquivocationReportSystem<
+        Self,
+        Offences,
+        session_history::SessionKeyOwnerProof,
+        ReportLongevity,
+    >;
 }
 
 impl pallet_grandpa::Config for Runtime {
@@ -299,8 +307,12 @@ impl pallet_grandpa::Config for Runtime {
     type MaxNominators = MaxNominators;
     type MaxSetIdSessionEntries = MaxSetIdSessionEntries;
     type KeyOwnerProof = sp_session::MembershipProof;
-    type EquivocationReportSystem =
-        pallet_grandpa::EquivocationReportSystem<Self, Offences, Historical, ReportLongevity>;
+    type EquivocationReportSystem = pallet_grandpa::EquivocationReportSystem<
+        Self,
+        Offences,
+        session_history::SessionKeyOwnerProof,
+        ReportLongevity,
+    >;
 }
 
 impl pallet_authorship::Config for Runtime {
@@ -480,13 +492,14 @@ pub type VaraSessionHandler = (
 );
 
 impl pallet_session::Config for Runtime {
+    type KeyRegistration = beefy_activation::Registration;
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = <Self as frame_system::Config>::AccountId;
     type ValidatorIdOf = pallet_staking::StashOf<Self>;
     type ShouldEndSession = Babe;
     type NextSessionRotation = Babe;
     // **IMPORTANT**: update this value with care, GearEthBridge is sensitive to this.
-    type SessionManager = pallet_session_historical::NoteHistoricalRoot<Self, Staking>;
+    type SessionManager = session_history::SessionManager;
     type SessionHandler = VaraSessionHandler;
     type Keys = SessionKeys;
     type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
@@ -525,6 +538,8 @@ impl pallet_mmr::Config for Runtime {
 }
 
 impl pallet_beefy::Config for Runtime {
+    type NewGenesisOrigin = beefy_activation::ActivationOrigin;
+    type NewGenesisValidationWeight = beefy_activation::ActivationWeight;
     type BeefyId = BeefyId;
     type MaxAuthorities = MaxAuthorities;
     type MaxNominators = MaxNominators;
@@ -533,8 +548,12 @@ impl pallet_beefy::Config for Runtime {
     type AncestryHelper = MmrLeaf;
     type WeightInfo = ();
     type KeyOwnerProof = sp_session::MembershipProof;
-    type EquivocationReportSystem =
-        pallet_beefy::EquivocationReportSystem<Self, Offences, Historical, ReportLongevity>;
+    type EquivocationReportSystem = pallet_beefy::EquivocationReportSystem<
+        Self,
+        Offences,
+        session_history::SessionKeyOwnerProof,
+        ReportLongevity,
+    >;
 }
 
 impl pallet_beefy_mmr::Config for Runtime {
@@ -1255,6 +1274,7 @@ impl SortedMembers<AccountId> for GearEthBridgeAdminAccounts {
 }
 
 impl pallet_gear_eth_bridge::Config for Runtime {
+    type DestinationBindingAllowed = beefy_activation::BindingAllowed;
     type RuntimeEvent = RuntimeEvent;
     type PalletId = GearEthBridgePalletId;
     type BuiltinAddress = GearEthBridgeBuiltinAddress;
@@ -1782,6 +1802,7 @@ mod benches {
         [pallet_utility, Utility]
         [pallet_mmr, Mmr]
         [pallet_beefy_mmr, MmrLeaf]
+        [beefy_benchmarks, beefy_benchmarks::Pallet::<Runtime>]
         // Gear pallets
         [pallet_gear, Gear]
         [pallet_gear_voucher, GearVoucher]
@@ -1803,6 +1824,22 @@ mod mmr {
 }
 
 impl_runtime_apis_plus_common! {
+    impl fg_primitives::GrandpaApi<Block> for Runtime {
+        fn grandpa_authorities() -> GrandpaAuthorityList { Grandpa::grandpa_authorities() }
+        fn current_set_id() -> fg_primitives::SetId { Grandpa::current_set_id() }
+        fn submit_report_equivocation_unsigned_extrinsic(
+            equivocation_proof: fg_primitives::EquivocationProof<<Block as BlockT>::Hash, NumberFor<Block>>,
+            key_owner_proof: fg_primitives::OpaqueKeyOwnershipProof,
+        ) -> Option<()> {
+            Grandpa::submit_unsigned_equivocation_report(equivocation_proof, key_owner_proof.decode()?)
+        }
+        fn generate_key_ownership_proof(set_id: fg_primitives::SetId, authority_id: GrandpaId)
+            -> Option<fg_primitives::OpaqueKeyOwnershipProof> {
+            if set_id != Grandpa::current_set_id() { return None; }
+            session_history::SessionKeyOwnerProof::prove((fg_primitives::KEY_TYPE, authority_id))
+                .map(|proof| fg_primitives::OpaqueKeyOwnershipProof::new(proof.encode()))
+        }
+    }
     impl sp_consensus_babe::BabeApi<Block> for Runtime {
         fn configuration() -> sp_consensus_babe::BabeConfiguration {
             // The choice of `c` parameter (where `1 - c` represents the
@@ -1837,7 +1874,7 @@ impl_runtime_apis_plus_common! {
             _slot: sp_consensus_babe::Slot,
             authority_id: sp_consensus_babe::AuthorityId,
         ) -> Option<sp_consensus_babe::OpaqueKeyOwnershipProof> {
-            Historical::prove((sp_consensus_babe::KEY_TYPE, authority_id))
+            session_history::SessionKeyOwnerProof::prove((sp_consensus_babe::KEY_TYPE, authority_id))
                 .map(|p| p.encode())
                 .map(sp_consensus_babe::OpaqueKeyOwnershipProof::new)
         }
@@ -1904,10 +1941,11 @@ impl_runtime_apis_plus_common! {
         }
 
         fn generate_key_ownership_proof(
-            _set_id: sp_consensus_beefy::ValidatorSetId,
+            set_id: sp_consensus_beefy::ValidatorSetId,
             authority_id: BeefyId,
         ) -> Option<sp_consensus_beefy::OpaqueKeyOwnershipProof> {
-            Historical::prove((sp_consensus_beefy::KEY_TYPE, authority_id))
+            if set_id != Beefy::validator_set()?.id() { return None; }
+            session_history::SessionKeyOwnerProof::prove((sp_consensus_beefy::KEY_TYPE, authority_id))
                 .map(|p| p.encode())
                 .map(sp_consensus_beefy::OpaqueKeyOwnershipProof::new)
         }

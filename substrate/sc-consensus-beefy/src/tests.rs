@@ -1675,6 +1675,85 @@ async fn should_catch_up_when_loading_saved_voter_state() {
 }
 
 #[tokio::test]
+async fn restart_preserves_changed_keys_and_mandatory_set_order() {
+    let sets = [
+        ValidatorSet::new(
+            make_beefy_ids(&[BeefyKeyring::Bob, BeefyKeyring::Alice]),
+            10,
+        )
+        .unwrap(),
+        ValidatorSet::new(
+            make_beefy_ids(&[BeefyKeyring::Charlie, BeefyKeyring::Alice]),
+            11,
+        )
+        .unwrap(),
+        ValidatorSet::new(
+            make_beefy_ids(&[BeefyKeyring::Alice, BeefyKeyring::Charlie]),
+            12,
+        )
+        .unwrap(),
+    ];
+    let mut net = BeefyTestNet::new(1);
+    let mut number = 0;
+    let hashes = net
+        .peer(0)
+        .generate_blocks(12, BlockOrigin::File, |mut builder| {
+            number += 1;
+            if let Some(index) = [7, 9, 11].iter().position(|start| *start == number) {
+                add_auth_change_digest(&mut builder, sets[index].clone());
+            }
+            add_mmr_digest(&mut builder, GOOD_MMR_ROOT);
+            builder.build().unwrap().block
+        });
+    net.run_until_sync().await;
+    net.peer(0)
+        .client()
+        .as_client()
+        .finalize_block(hashes[7], None)
+        .unwrap();
+
+    // Read the actual enactment digest, including when activation state was pruned.
+    let mut api = TestApi::new(7, &sets[0], GOOD_MMR_ROOT);
+    api.validator_set = None;
+    let mut finality = start_finality_worker(
+        net.peer(0)
+            .client()
+            .as_client()
+            .finality_notification_stream(),
+    );
+    let initial = voter_init_setup(&mut net, &mut finality, &api)
+        .await
+        .unwrap();
+    assert_eq!(initial.voting_oracle().sessions().len(), 1);
+    assert_eq!(initial.active_round().unwrap().validator_set(), &sets[0]);
+
+    // Both new sets are finalized while the node is down, before its first BEEFY proof.
+    net.peer(0)
+        .client()
+        .as_client()
+        .finalize_block(hashes[11], None)
+        .unwrap();
+    let mut finality = start_finality_worker(
+        net.peer(0)
+            .client()
+            .as_client()
+            .finality_notification_stream(),
+    );
+    let restored = voter_init_setup(&mut net, &mut finality, &api)
+        .await
+        .unwrap();
+    let sessions = restored.voting_oracle().sessions();
+    assert_eq!(sessions.len(), 3);
+    for ((session, start), set) in sessions.iter().zip([7, 9, 11]).zip(sets.iter()) {
+        assert_eq!(session.session_start(), start);
+        assert_eq!(session.validator_set(), set);
+        assert!(!session.mandatory_done());
+    }
+    assert_eq!(restored.voting_oracle().voting_target(), Some(7));
+    assert_eq!(restored.best_beefy(), 0);
+}
+
+#[tokio::test]
 async fn saved_state_before_first_proof_does_not_wait_for_pre_activation_headers() {
     use crate::round::Rounds;
     use sc_client_api::backend::{BlockImportOperation, NewBlockState};

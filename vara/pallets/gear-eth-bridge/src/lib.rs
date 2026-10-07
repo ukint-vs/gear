@@ -60,7 +60,7 @@ pub mod pallet {
     use gprimitives::{H160, H256, U256};
     use sp_runtime::{
         BoundToRuntimeAppPublic,
-        traits::{Keccak256, Zero},
+        traits::{Hash, Keccak256, Zero},
     };
     use sp_std::vec::Vec;
 
@@ -92,6 +92,9 @@ pub mod pallet {
 
         /// Privileged origin for administrative operations.
         type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
+        /// True only while BEEFY has never been activated or scheduled.
+        type DestinationBindingAllowed: Get<bool>;
 
         /// The AccountId of the bridge admin.
         #[pallet::constant]
@@ -156,6 +159,18 @@ pub mod pallet {
         ///
         /// Related to bridge clearing on initialization of the second block in a new era.
         QueueReset,
+
+        /// Immutable source/destination lane was bound by governance.
+        DestinationBound {
+            /// Vara block-zero hash, preventing cross-network replay.
+            source_genesis: H256,
+            /// Ethereum chain ID encoded as a big-endian 256-bit value.
+            chain_id: H256,
+            /// Only destination permitted to consume this lane's commitments.
+            queue: H160,
+            /// Keccak commitment to the source genesis and destination.
+            domain: H256,
+        },
     }
 
     /// Pallet Gear Eth Bridge's error.
@@ -183,6 +198,9 @@ pub mod pallet {
         /// The error happens when attempted to reset overflowed queue, but
         /// queue isn't overflowed or incorrect finality proof provided.
         InvalidQueueReset,
+
+        /// A lane is already bound, BEEFY is started, or an identity is zero.
+        InvalidDestinationBinding,
     }
 
     /// Lifecycle storage.
@@ -275,6 +293,10 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn bridge_domain)]
     pub type BridgeDomain<T> = StorageValue<_, H256, ValueQuery>;
+
+    /// Actual source genesis, destination chain ID (big endian), and original queue.
+    #[pallet::storage]
+    pub type DestinationBinding<T> = StorageValue<_, (H256, H256, H160), OptionQuery>;
 
     #[pallet::genesis_config]
     #[derive(frame_support::DefaultNoBound)]
@@ -432,10 +454,62 @@ pub mod pallet {
 
             Ok(Pays::No.into())
         }
+
+        /// Bind the original destination once, before BEEFY activation. Root calls are checked too.
+        #[pallet::call_index(5)]
+        #[pallet::weight(T::DbWeight::get().reads_writes(4, 2).saturating_add(Weight::from_parts(10_000_000, 4_096)))]
+        pub fn bind_destination(
+            origin: OriginFor<T>,
+            chain_id: H256,
+            queue: H160,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                T::DestinationBindingAllowed::get(),
+                Error::<T>::InvalidDestinationBinding
+            );
+            ensure!(
+                !DestinationBinding::<T>::exists() && BridgeDomain::<T>::get().is_zero(),
+                Error::<T>::InvalidDestinationBinding
+            );
+            let genesis = frame_system::Pallet::<T>::block_hash(BlockNumberFor::<T>::zero());
+            let genesis_bytes: &[u8] = genesis.as_ref();
+            ensure!(
+                genesis_bytes.len() == 32 && !chain_id.is_zero() && !queue.is_zero(),
+                Error::<T>::InvalidDestinationBinding
+            );
+            let source_genesis = H256::from_slice(genesis_bytes);
+            ensure!(
+                !source_genesis.is_zero(),
+                Error::<T>::InvalidDestinationBinding
+            );
+            let domain = Self::destination_domain(source_genesis, chain_id, queue);
+            ensure!(!domain.is_zero(), Error::<T>::InvalidDestinationBinding);
+            DestinationBinding::<T>::put((source_genesis, chain_id, queue));
+            BridgeDomain::<T>::put(domain);
+            Self::deposit_event(Event::DestinationBound {
+                source_genesis,
+                chain_id,
+                queue,
+                domain,
+            });
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
-        /// Returns pallet prefix, storage prefix and resulting prefix hash for `AuthoritySetHash` storage.
+        /// Version-2 lane derivation uses the actual genesis identity, not an operator-provided source domain.
+        pub fn destination_domain(source_genesis: H256, chain_id: H256, queue: H160) -> H256 {
+            const PREFIX: &[u8] = b"vara/gear-eth-bridge-domain/v2";
+            let mut preimage = [0u8; PREFIX.len() + 84];
+            preimage[..PREFIX.len()].copy_from_slice(PREFIX);
+            preimage[PREFIX.len()..PREFIX.len() + 32].copy_from_slice(source_genesis.as_bytes());
+            preimage[PREFIX.len() + 32..PREFIX.len() + 64].copy_from_slice(chain_id.as_bytes());
+            preimage[PREFIX.len() + 64..].copy_from_slice(queue.as_bytes());
+            Keccak256::hash(&preimage).0.into()
+        }
+
+        /// Returns pallet prefix
         pub fn authority_set_hash_storage_info() -> (&'static str, &'static str, [u8; 32]) {
             type Storage<T> = _GeneratedPrefixForStorageAuthoritySetHash<T>;
 

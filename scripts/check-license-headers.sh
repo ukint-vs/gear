@@ -22,6 +22,8 @@ expected_spdx_for() {
             printf '%s\n' "$GEAR_SPDX"
             ;;
         substrate/sp-allocator/* | \
+        substrate/pallet-beefy/* | \
+        substrate/pallet-session/* | \
         substrate/sp-runtime-interface-proc-macro/* | \
         substrate/sp-wasm-interface/* | \
         substrate/sp-wasm-interface-common/* | \
@@ -45,6 +47,8 @@ copyright_pattern_for() {
             printf '%s\n' '^// Copyright'
             ;;
         substrate/runtime-executor/* | \
+        substrate/pallet-beefy/* | \
+        substrate/pallet-session/* | \
         substrate/sp-allocator/* | \
         substrate/sp-runtime-interface-proc-macro/* | \
         substrate/sp-wasm-interface/* | \
