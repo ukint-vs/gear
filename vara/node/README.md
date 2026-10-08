@@ -202,6 +202,8 @@ This follows the separation used by [Polkadot's BEEFY runtime introduction](http
 and later activation on [Kusama](https://kusama.subsquare.io/referenda/343) and
 [Polkadot](https://polkadot.subsquare.io/referenda/615). No activation-only Wasm upgrade is needed.
 
+The runtime uses `ext_crypto_ecdsa_verify_prehashed_version_1` for BEEFY key proofs and `ext_trie_blake2_256_root_version_2` for historical ownership roots. Both are supplied by the pinned SDK's `SubstrateHostFunctions` in the node executor. Release qualification checks the built WASM against the explicit host-import allowlist; do not disable that check.
+
 The runtime upgrade leaves BEEFY inactive. The session-key migration supports the
 Vara 11000 predecessor, preserves the four existing keys and queued order, and
 adds placeholder BEEFY keys. Validators must replace those placeholders with real
