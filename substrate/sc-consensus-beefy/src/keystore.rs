@@ -395,7 +395,7 @@ pub mod tests {
                 alice.as_ref(),
             )
             .unwrap();
-        assert_eq!(beefy_store.authority_id(&[alice.clone()]), None);
+        assert_eq!(beefy_store.authority_id(std::slice::from_ref(&alice)), None);
         store
             .insert(BEEFY_KEY_TYPE, "//Alice", alice.as_ref())
             .unwrap();
@@ -403,7 +403,7 @@ pub mod tests {
 
         // Rotation does not remove the old key needed for a lagging mandatory round.
         assert_eq!(
-            beefy_store.authority_id(&[alice.clone()]),
+            beefy_store.authority_id(std::slice::from_ref(&alice)),
             Some(alice.clone())
         );
         assert_eq!(

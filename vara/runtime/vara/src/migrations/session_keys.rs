@@ -587,7 +587,7 @@ fn migrate_keys(validator: crate::AccountId, old: SessionKeysOld) -> SessionKeys
 mod tests {
     use super::*;
     use crate::{BeefyId, session_history::SessionKeyOwnerProof};
-    use frame_support::traits::KeyOwnerProofSystem;
+    use frame_support::traits::{KeyOwnerProofSystem, OnInitialize};
     use sp_core::Pair;
     use sp_runtime::{StateVersion, traits::BlakeTwo256};
     use sp_trie::{LayoutV0, Trie, TrieDBBuilder};
@@ -874,6 +874,7 @@ mod tests {
                     None
                 );
 
+                crate::Babe::on_initialize(crate::System::block_number());
                 crate::Session::rotate_session();
                 assert_eq!(crate::Session::current_index(), 18);
                 assert_owned_proofs(&older);
@@ -901,6 +902,7 @@ mod tests {
                 }
                 assert_owned_proofs(&next);
                 crate::System::set_block_number(2);
+                crate::Babe::on_initialize(crate::System::block_number());
                 crate::Session::rotate_session();
                 assert_eq!(crate::Session::current_index(), 19);
                 assert_owned_proofs(&legacy_current);

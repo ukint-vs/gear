@@ -120,6 +120,8 @@ The final normal-timing try-runtime artifact, SHA-256 **`685ead7f39b71dd1708910e
 
 The full 126-test source suite and 56 native BEEFY client tests pass, as do strict all-target/all-feature Clippy checks for the runtime and affected pallets. Ten custom and six bridge benchmark cases pass native and actual WASM verification. The offline helper's three test groups also pass after extraction from the release bundle, and a native two-validator run exercised the actual helper through activation, rotation and purge. Qualification remains distinct from publication/approval of a production release and from public-network governance execution.
 
+The ownership regressions also pass with BABE debug assertions enabled: fixtures initialize BABE before direct session rotation, matching the runtime hook contract rather than relying on release builds to omit its assertion. Native BEEFY client all-target/all-feature Clippy passes as well.
+
 ## Gate 2: preserve queue state and define recovery
 
 **Not completed by the local v1 milestone.**

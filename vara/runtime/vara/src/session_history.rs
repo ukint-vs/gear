@@ -179,6 +179,7 @@ mod tests {
         BuildStorage, RuntimeOrigin, System,
         genesis_config_presets::{authority_keys_from_seed, local_testnet_genesis},
     };
+    use frame_support::traits::OnInitialize;
     use sp_core::Pair;
 
     fn proofs(keys: &SessionKeys) -> Vec<(KeyTypeId, Vec<u8>, sp_session::MembershipProof)> {
@@ -251,6 +252,7 @@ mod tests {
                         .is_none()
                     );
                     assert_owner(&original, &owner);
+                    crate::Babe::on_initialize(System::block_number());
                     Session::rotate_session();
                     assert_eq!(proofs(&old)[0].2.session, 1);
                     assert_owner(&original, &owner);
@@ -262,6 +264,7 @@ mod tests {
                         .is_none()
                     );
                     System::set_block_number(2);
+                    crate::Babe::on_initialize(System::block_number());
                     Session::rotate_session();
                     let activated = proofs(&replacement);
                     assert_owner(&activated, &owner);
@@ -276,9 +279,11 @@ mod tests {
                     assert!(pallet_session::NextKeys::<Runtime>::get(&owner).is_none());
                     assert_owner(&proofs(&replacement), &owner);
                     System::set_block_number(3);
+                    crate::Babe::on_initialize(System::block_number());
                     Session::rotate_session();
                     assert_owner(&proofs(&replacement), &owner);
                     System::set_block_number(4);
+                    crate::Babe::on_initialize(System::block_number());
                     Session::rotate_session();
                     assert!(
                         SessionKeyOwnerProof::prove((
