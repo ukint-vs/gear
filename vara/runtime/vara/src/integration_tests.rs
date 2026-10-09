@@ -139,14 +139,6 @@ impl ExtBuilder {
         let mut storage = frame_system::GenesisConfig::<Runtime>::default()
             .build_storage()
             .unwrap();
-        pallet_gear_eth_bridge::GenesisConfig::<Runtime> {
-            bridge_domain: "0x9aac6d72e183672d20696112082accb15719870152120212f541e3e233837944"
-                .parse()
-                .expect("bridge domain fixture is valid"),
-            _config: Default::default(),
-        }
-        .assimilate_storage(&mut storage)
-        .unwrap();
 
         let mut balances = self
             .initial_authorities
@@ -1187,12 +1179,6 @@ fn session_boundary_leaf_uses_new_authorities_and_preclear_bridge_root() {
             Timestamp::on_finalize(1);
             Babe::on_finalize(1);
             let (old_id, root) = GearEthBridge::bridge_snapshot().unwrap();
-            assert_eq!(
-                GearEthBridge::bridge_domain(),
-                "0x9aac6d72e183672d20696112082accb15719870152120212f541e3e233837944"
-                    .parse()
-                    .expect("bridge domain fixture is valid"),
-            );
             assert_ne!(root, sp_core::H256::zero());
             let expected_extra = bridge_leaf::VaraBridgeProvider::extra_data();
             assert_eq!(

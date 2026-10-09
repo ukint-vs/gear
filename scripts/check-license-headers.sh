@@ -24,6 +24,10 @@ expected_spdx_for() {
         substrate/sp-allocator/* | \
         substrate/pallet-beefy/* | \
         substrate/pallet-session/* | \
+        substrate/sp-application-crypto/* | \
+        substrate/sp-runtime/* | \
+        substrate/sp-session/* | \
+        substrate/test-runtime/* | \
         substrate/sp-runtime-interface-proc-macro/* | \
         substrate/sp-wasm-interface/* | \
         substrate/sp-wasm-interface-common/* | \

@@ -3,6 +3,9 @@
 This directory contains selected Polkadot SDK crates copied into the Gear workspace from Polkadot SDK `stable2409`, source reference [`298f676c91d64f15f38ea7fd78f125c5889ab09c`](https://github.com/paritytech/polkadot-sdk/tree/298f676c91d64f15f38ea7fd78f125c5889ab09c), plus Gear-local compatibility crates needed to isolate the remaining fork delta.
 
 Copied crates are modified under the terms of their upstream open-source licenses. Original SPDX headers and upstream copyright notices remain in the copied source files; original copyright ownership remains with the upstream rightsholders as indicated there, including Parity Technologies where present. Gear maintains local changes to isolate the remaining fork delta while the rest of the workspace depends on upstream Polkadot SDK.
+The license-header check maps the native ownership primitive/test-runtime paths
+to Apache-2.0. Imported RPC files use the repository's minimal SPDX header format,
+preserving their GPL classpath exception and original copyright attribution.
 
 Local Cargo package names intentionally stay compatible with upstream package names so `[patch]` can replace Polkadot SDK git dependencies. When these crates are prepared for crates.io, Gear publishes them under `g*` aliases for Gear ecosystem packages.
 
@@ -20,6 +23,12 @@ Local Cargo package names intentionally stay compatible with upstream package na
 | `substrate/sc-consensus-beefy` | `sc-consensus-beefy` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/pallet-beefy` | `pallet-beefy` | not published by Gear | Apache-2.0 |
 | `substrate/pallet-session` | `pallet-session` | not published by Gear | Apache-2.0 |
+| `substrate/sp-application-crypto` | `sp-application-crypto` 38.0.0 | not published by Gear | Apache-2.0 |
+| `substrate/sp-runtime` | `sp-runtime` 39.0.5 | not published by Gear | Apache-2.0 |
+| `substrate/sp-session` | `sp-session` 36.0.0 | not published by Gear | Apache-2.0 |
+| `substrate/rpc-api` | `sc-rpc-api` 0.44.0 | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
+| `substrate/rpc` | `sc-rpc` 40.0.0 | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
+| `substrate/test-runtime` | `substrate-test-runtime` 2.0.0 | not published by Gear | Apache-2.0 |
 | `substrate/rpc-servers` | `sc-rpc-server` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/service` | `sc-service` | not published by Gear | GPL-3.0-or-later WITH Classpath-exception-2.0 |
 | `substrate/substrate-wasm-builder` | `substrate-wasm-builder` | `gsubstrate-wasm-builder` | Apache-2.0 |
@@ -30,13 +39,53 @@ Gear also carries raw-buffer gossip rebroadcast fixes and signed-proof/MMR regre
 
 Restart initialization reads the current finalized state before waiting for another finality notification. Recovery replays the exact persisted mandatory vote without re-signing, stops header catch-up at BEEFY genesis, and restores the finalized RPC head. These changes do not alter the persisted SCALE schema. The remaining SDK stays pinned to the source reference above.
 
+The six native ownership patches backport the SessionKeys v2 and
+`author_rotateKeysWithOwner` protocol from [Polkadot SDK #1739](https://github.com/paritytech/polkadot-sdk/pull/1739),
+released at `db46f6f939f68b8b84ddd531e77dbe8771dc4a73`, onto the pinned source
+without changing its package versions or editions. Ownership signs `POP_ || owner`
+with each application key; ECDSA possession rejects noncanonical high-S signatures
+without changing other ECDSA verification. Experimental aggregate schemes are
+unsupported. The RPC uses the configured native keystore; the test-runtime patch
+keeps the existing pinned test client coherent. No keystore, core, I/O or client
+fork is introduced.
+Native ECDSA possession uses the pinned SDK host functions
+`ext_crypto_ecdsa_sign_version_1` and `ext_crypto_ecdsa_verify_version_2`;
+the runtime-import allowlist includes both, without adding new host APIs.
+The SDK test runtime is a dependency-only workspace exclusion: its optional
+`disable-logging` mode must not leak into Gear through workspace `--all-features`.
+Its manifest still inherits the pinned workspace dependencies explicitly.
+The ownership crates retain the pinned SDK lint policy while remaining workspace
+members for their dev-dependency tests; compiler-compatibility fixes preserve the
+upstream public APIs.
+The RPC backport omits the unused upstream `sc-network-common` dev-dependency;
+production dependencies and APIs are unchanged.
+
 The local BEEFY pallet adds a configurable argument-aware activation origin and
 validation weight, avoiding a root-dispatch call-filter bypass. The local session
-pallet adds caller/validator-bound registration and purge hooks, without cloning
-key bundles, and marks queued sets changed when a purged validator shortens them.
-Both hooks default to upstream behavior so other SDK runtimes/mocks remain
-compatible; Vara explicitly supplies the secure guards. Associated type defaults
-use the workspace-pinned nightly compiler.
+pallet validates every native ownership proof against the effective signed
+account before registration, preserves ordinary validator/stash conversion and
+key ownership accounting, and marks queued sets changed when a purged validator
+shortens them. No custom registration protocol or persistent proof ledger remains.
+
+For operators, [node installation](../vara/node/README.md#beefy-upgrade-and-later-activation)
+precedes the runtime upgrade: new-node API v1 fallback supports only the old runtime,
+not old nodes running the changed v2 ABI. SessionKeys API ID is
+`0xab3c0572291feb8b` (the pinned macro's Blake2b-64 hash of `SessionKeys`).
+Native generation uses the configured persistent keystore and seed None; its
+password affects derivation, not file encryption. Five-key generation is
+nontransactional, so a failed proof/signing request may leave unused private keys.
+
+Source activation/restart validates actual active/queued committees up to 1000,
+independently of destination binding, desired committee and dormant owners.
+The runtime adds no candidate-readiness election filter or forced chilling.
+Bridge cutover is separately approved: pause/drain/reconcile, bind once while
+paused before or after BEEFY, authenticate a signed post-binding leaf, verify the
+destination and explicitly unpause. Bound actual/queued and desired capacity is
+256; Normal unpause has a separate full-bridge allowance from the source
+Operational reservation. Runtime guards do not automatically pause or reset state
+and cannot guarantee future private signing. See the [operator contract](../beefy-deployment.md)
+and [qualification gates](../beefy-migration.md); old custom-contract snapshot/test
+counts are superseded, not current native-contract release qualification.
 
 ## Gear Compatibility Crates
 

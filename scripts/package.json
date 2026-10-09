@@ -1,5 +1,5 @@
 {
-  "name": "vara-beefy-validator-tools",
+  "name": "vara-beefy-ci-smoke",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
   "scripts": {
     "test": "node --test beefy-tools.test.mjs"
   },
-  "dependencies": {
+  "devDependencies": {
     "@noble/curves": "1.9.7",
     "@polkadot/api": "17.0.2",
     "@polkadot/keyring": "14.0.3",

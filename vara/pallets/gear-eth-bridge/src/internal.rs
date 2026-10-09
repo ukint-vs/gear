@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 use crate::{
-    ClearTimer, Config, Error, Event, Initialized, MessageNonce, Pallet, Paused, Queue,
-    QueueCapacityOf, QueueChanged, QueueId, QueueMerkleRoot, QueueOverflowedSince, QueuesInfo,
+    ClearTimer, Config, DestinationBinding, Error, Event, Initialized, MessageNonce, Pallet,
+    Paused, Queue, QueueCapacityOf, QueueChanged, QueueId, QueueMerkleRoot, QueueOverflowedSince,
+    QueuesInfo,
 };
 use bp_header_chain::{
     AuthoritySet,
@@ -282,10 +283,12 @@ impl<T: Config> Pallet<T> {
             Error::<T>::BridgeCleanupRequired
         );
 
+        ensure!(T::MessageReadiness::get(), Error::<T>::BridgeNotReady);
+
         let from_governance = Self::ensure_admin_or_pauser(source).is_ok();
 
-        // Ensuring that pallet isn't paused if it's not forced from governance.
-        if !from_governance {
+        // Bound lanes have no governance pause exemption; legacy lanes retain it.
+        if !from_governance || DestinationBinding::<T>::exists() {
             ensure!(!Paused::<T>::get(), Error::<T>::BridgeIsPaused);
         }
 

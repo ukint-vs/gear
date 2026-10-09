@@ -1,213 +1,121 @@
-# Migrating the bridge to BEEFY
+# Mainnet migration to native BEEFY
 
-This is the migration roadmap and release-gate checklist for replacing the Gear-to-Ethereum root-proving path with native BEEFY commitments and MMR proofs. It is not authorization to upgrade a live chain or move bridge assets. For commands, deployment addresses and current evidence locations, use [BEEFY deployment](beefy-deployment.md).
+This is the mainnet coordinator checklist and handover contract for native BEEFY/MMR replacing the **Gear-to-Ethereum consensus/root proof path**. It does not replace Ethereum-to-Gear checkpoint/light-client programs, Ethereum event verification, token accounting, governance or application relayers. Retain those components until their own verified cutover. This document is not transaction or asset-movement authorization. Detailed commands are in the [mainnet operator runbook](beefy-deployment.md#mainnet-operator-runbook).
 
-**2026-09-22 update:** a separate local Gear → Hoodi message-only deployment now exists, using real BEEFY verification, an immutable adapter and MessageQueue. The runner supports retained-message restart, real destination delays/finality and an optional handover follower. The dated publication inventory and planning baseline below are retained; claims that no Hoodi script/command exists are superseded for this demonstration only. Production transaction recovery, existing-chain migration, token bridging and governance integration remain release gates. No commit, push or PR update was performed during this deployment.
+**Node installation, runtime upgrade, source BEEFY activation and Ethereum bridge cutover are four independent actions.** In particular, source BEEFY activation does not require an Ethereum deployment, destination binding or bridge-sized desired committee. Legacy GRANDPA traffic remains operational until its separate approved pause/drain/cutover.
 
-**Current real-network procedure:** use the [testnet/mainnet operator runbook](beefy-deployment.md#existing-testnet-and-mainnet-operator-runbook). Source migration and key/activation guards are implemented and qualified by the evidence below; the older local-v1 planning inventory is historical. Production artifacts are built/published by the normal release pipeline, not by each validator. Node updates and indexing precede the runtime upgrade; real five-key registration follows it; destination binding precedes BEEFY activation; Ethereum traffic cutover requires its own approval.
+## Mainnet coordinator checklist
 
-## Historical publication inventory (2026-09-21)
+You own the rollout ledger, validator communication and the go/no-go decision at each boundary. Keep one durable mainnet release record; collect public evidence only, never validator session secrets, seeds or passwords.
 
-Remote branches and PR state were checked on **2026-09-21**. Recheck before release; branch names are not release pins.
+| Stage | Your action | Required acknowledgement before proceeding |
+| --- | --- | --- |
+| Finalize the PR | Resolve review findings; include every native SDK patch, lockfile and documentation change in the reviewed commit. Exclude unrelated local work. Require review and CI on that exact head, not an older approved revision. | Final head SHA, resolved findings and green required checks. |
+| Merge and release | Merge through the repository policy; tag the approved merged commit. Run the existing Release workflow for that tag, initially as a draft with `make_latest=false`. Verify the mainnet WASM, metadata, node and `SHA256SUMS`, then publish and distribute the release record. | Published immutable tag/commit and verified artifact identities. Do not publish from an uncommitted working tree. |
+| Prepare mainnet | Retain the mainnet snapshot evidence, complete baseline-capacity and exact-artifact qualification, record live predecessor/validator inventories, and schedule a coordinated upgrade window. Keep legacy bridge delivery running. | All active/queued operators and electable standby operators accounted for; proof archives ready from the first MMR insertion; no unresolved capacity or finality issue. |
+| Roll out nodes | Send the published node and [validator checklist](vara/node/README.md#beefy-upgrade-and-later-activation). Coordinate rolling restarts while preserving BABE/GRANDPA quorum. | Every required operator reports the pre-upgrade acknowledgement below; old node versions are not left serving post-upgrade duties. |
+| Enact runtime | Arrange approved mainnet Root execution of `system.setCode` using the production WASM. Record execution/finalization and inspect migrated state using the runbook. | Finalized `vara/20100`, expected code/metadata, SessionKeys API v2, preserved old consensus/bridge state and ongoing BABE/GRANDPA finality. |
+| Register and propagate keys | Tell validators to generate native owner-bound bundles locally and submit ordinary `session.setKeys`. Reconcile receipts at common finalized state; observe actual active/queued propagation and standby readiness. | Public registration acknowledgements, exact active/queued readiness across normal sessions/era and retained old keys; no placeholder signer remains in either source committee. |
+| Activate source BEEFY | Submit separately approved Root `beefy.setNewGenesis(delayInBlocks > 0)`. Record G from the execution block, then monitor native quorum, real handovers and archive proofs. | Successful finalized inner dispatch and advancing verified BEEFY commitments/MMR proofs from independent nodes. No Ethereum binding is required. |
+| Cut over the bridge later | Follow Gates 3–5 only after destination review and approval. Coordinate pause/drain/reconciliation, immutable binding, post-binding bootstrap, accepted roots and explicit unpause/canary. | Separate custody/replay/destination sign-off. Source activation alone is not permission to move bridge traffic or assets. |
 
-| Repository | Pushed branch | Remote head | Pull request | State at inspection |
-| --- | --- | --- | --- | --- |
-| `gear-tech/gear` | `beefy-mmr-phase-0-1` | `0b13f2c61b0e5d9844c7efd12727487a2fdb8c63` | [#5642](https://github.com/gear-tech/gear/pull/5642), based on `master` | Open, draft |
-| `gear-tech/gear` | `beefy-bridge-e2e` | `ab72e2134968251e91f400120718491622a36bae` | [#5644](https://github.com/gear-tech/gear/pull/5644), based on `beefy-mmr-phase-0-1` | Open, draft |
-| `gear-tech/gear-bridges` | `beefy-local-e2e` | `14b44ccfa729ce67e961e8e3698fc84455fdc5f5` | [#860](https://github.com/gear-tech/gear-bridges/pull/860), based on `main` | Open, draft |
+Before enactment, stop the rollout on a missing operator acknowledgement, incompatible node, wrong artifact or lost BABE/GRANDPA finality. After enactment, recover forward with compatible binaries; do not downgrade the runtime, restore stale live databases, wipe keys or reset queues/MMR. If source readiness fails, leave BEEFY unscheduled; if destination readiness fails, leave destination traffic disabled. A future BEEFY restart is a coordinated operation, not a repair button.
 
-Gear [#5643](https://github.com/gear-tech/gear/pull/5643) is a closed duplicate, not another dependency. Both Gear BEEFY branches also existed on the `ukint-vs/gear` fork at the same heads. PR #5642 tracks `ukint-vs/gear:beefy-mmr-phase-0-1`; PR #5644 tracks `gear-tech/gear:beefy-bridge-e2e`. Pushing only the upstream foundation branch does not update #5642. Keep the fork head and the upstream branch used as #5644's base coordinated when publishing the stack.
+### Messages to validators
 
-**The secure-v1 changes and these guides are local, uncommitted work on the two E2E branches at inspection time. They are not contained in the remote heads above.** A fresh clone of those heads does not reproduce the completed secure-v1 implementation. No commit, push, PR edit or merge was performed while preparing these guides.
+Send three explicit notices, with the pinned mainnet manifest and your acknowledgement channel:
 
-The separate Bridge branch `security/high-risk-fixes` is pushed at `2f9994ea99e47820ee39326e82612fd19216d345`. No PR with that head was returned in `gear-tech/gear-bridges`. Its existence is not evidence that its changes are integrated into the BEEFY branch or that the deferred MessageQueue recovery work is complete.
+1. **Install now; do not rotate yet.** Give the approved node checksum, restart window and requirement to preserve the existing service/database/keystore/password. Collect installed version/hash, stash/effective owner, mainnet genesis/finalized height, indexing and custody confirmation.
+2. **Runtime upgrade is finalized; register now.** Give the finalized enactment block/code identity and API v2 confirmation. Ask for local `author_rotateKeysWithOwner`, ordinary signed registration and the public receipt/bundle; never ask validators to send private keys.
+3. **Source activation is scheduled.** Give the finalized scheduling receipt and actual G, monitoring contacts and retention requirement. Collect live duty/hand-over observations. Validators must not independently schedule genesis, bind a destination or purge keys to make a checklist green.
 
-Read-only status refresh:
+The full [validator acknowledgement format](vara/node/README.md#acknowledgements-to-the-coordinator) is the handover contract. A transaction hash, process uptime or `author_hasSessionKeys=true` alone is not completion.
 
-~~~sh
-rtk gh pr view 5642 --repo gear-tech/gear --json state,isDraft,headRefOid,baseRefName,url
-rtk gh pr view 5644 --repo gear-tech/gear --json state,isDraft,headRefOid,baseRefName,url
-rtk gh pr view 860 --repo gear-tech/gear-bridges --json state,isDraft,headRefOid,baseRefName,url
-rtk git -C "$GEAR_DIR" ls-remote origin 'refs/heads/*beefy*'
-rtk git -C "$BRIDGE_DIR" ls-remote origin 'refs/heads/*beefy*'
-~~~
+## Gate 1: qualify the mainnet release and supported state
 
-Before publication, review the dirty worktrees, publish the runtime and Bridge v1 changes together as reviewable commits, update the affected PR scope, and record the final commit and artifact hashes. The Gear base must precede its dependent PR. Keep `fast-runtime` opt-in and out of production builds. Do not treat the currently pushed draft stack as a production release.
+Publish a mainnet manifest with immutable Gear and, for later bridge cutover, paired Bridge commits; node/runtime/metadata/contract checksums; chain spec/genesis; supported finalized predecessor; spec/transaction/API versions; normal timing/features; proof archives and independent upgrade/activation/cutover approvals. Review and CI gate merging; artifact identity gates release publication; capacity, operator readiness and governance gate enactment. Draft branch heads, historical CI totals and local artifact hashes do not approve a newer commit. Validators use released nodes and ordinary transactions, not an external session-key signer.
 
-## What is implemented
+The exact mainnet migration is **11000 → 20100**, retaining identity `vara`. Mainnet production WASM excludes `dev`, `fast-runtime`, `try-runtime` and `runtime-benchmarks`; it keeps three-second slots, two-hour sessions and six-session eras. Testnet is the same runtime with `dev`, including its identity and Sudo, and remains a build/test variant, not a required rollout stage. The release node's embedded testnet runtime does not override mainnet on-chain WASM: operators explicitly retain `--chain vara`. Use a matching same-revision mainnet try-runtime companion for the retained snapshot, and qualify the exact deployable mainnet WASM separately.
 
-The secure-v1 local implementation has passed normal and `dev` runtime suites, Rust relay tests, the full Foundry suite, API artifact comparisons, and a real two-authority rehearsal. The recorded secure-v1 milestone rehearsal used 28.59 seconds for preparation and 108.50 seconds for the separate live sequence. It accepted 40 authenticated updates and delivered two real messages across two key rotations, a natural queue clear and a stale-proof rebuild.
+Reuse the compatible **full mainnet snapshot** at its pinned finalized state to qualify the shared native session-key migration. Preserve input-root/header comparison, exact predecessor checks, all configured try-state checks, decoding, idempotence, unsuppressed weight checks and historical ownership proofs. Pair this with the `dev` tests and normal-timing testnet build/identity/metadata/import checks; a separate testnet snapshot is not required for implementation acceptance. Keep each network's actual state inventory and deployment qualification separate. Only multi-block simulation is disabled for this single-block-only migrator. Unsupported predecessor, malformed state or oversized migration cost stops release; never alter snapshot identity to pretend it came from another network.
 
-This proves the consensus-to-message path on fresh local chains. It does **not** prove an existing-network storage upgrade, an asset migration, a production relay service or a Hoodi deployment.
+### Preserved-state contract
 
-The implemented path is:
+The migration preserves four legacy public fields and ordered active/queued sets, key ownership, **bridge pause state, queue, nonce, owners and history**. It adds deterministic `0x02 || Keccak256(stash.raw32)` BEEFY placeholders, not usable signing keys. It does not pause/reset/bind the bridge or activate BEEFY. Missing inactive BEEFY bookkeeping is initialized without overwriting existing records. First-upgrade `Beefy.GenesisBlock` remains absent.
 
-~~~text
-Finalized Gear blocks + native BEEFY signatures
-  -> source collector and signature validation
-  -> BeefyClient: newest MMR leaf, source identity/time, authority handovers
-  -> VaraQueueRootVerifier: historical queue leaf under the live latest anchor
-  -> existing MessageQueue: root registration, maturity, nonce replay checks
-  -> message destination / token application
-~~~
+Prior historical roots stay unchanged. Current/queued five-key roots are rebuilt while original roots remain available for already-issued proofs during historical retention; pruning still ends that availability. Immutable active snapshots, not mutable `NextKeys`, define later historical roots. Preserve the full keystore and old private entries through handover and recovery/offence-proof retention.
 
-BEEFY replaces the **Gear-to-Ethereum consensus/root proof path**. It does not replace Ethereum-to-Gear checkpoint/light-client programs, Ethereum event verification, token accounting, governance programs or application relayers. Inventory and retain those components until their own cutover is verified.
+No persistent custom ownership ledger or pending-owner counter gates activation. Registered-owner migration input is not limited by either the source's 1000 committee bound or destination's 256 capacity. Compare live owner/exposure counts with qualified migration bounds before enactment; half-block trie headroom is **plus size-dependent database charges**, not a fixed total migration ceiling.
 
-### Protocol invariants operators must preserve
+### Node/API ordering and native registration
 
-- The current source snapshot is exactly 86 bytes: version **2**, `vara`, immutable bridge domain, parent timestamp in milliseconds, initialized flag, queue ID and queue root. The domain binds the actual source genesis, destination chain ID and queue address. Native commitments and the version-0, 113-byte outer MMR leaf stay unchanged. The historical v1 Hoodi client is not evidence of compatibility with this v2 snapshot; verify the paired bridge release.
-- The v1 queue envelope is exactly `576 + 32N` bytes with at most 256 proof items. V0 proofs are not a compatibility path.
-- `A` is the first MMR insertion block. `G` is BEEFY activation. Discover both; do not assume they are equal after a live upgrade.
-- Bootstrap uses a verified finalized checkpoint `C`, with `0 < A < C <= u32::MAX`, the parent timestamp at `C-1`, and the exact ordered current/next authority tuples. Genesis and timestamp are nonzero; next ID is current ID + 1.
-- The newly deployed client starts with an accepted MMR root of zero. A later signed update must be accepted before any queue proof can register a root.
-- Every update authenticates the newest leaf, including same-set updates. Source time cannot decrease, may be at most 120 seconds ahead, and expires strictly after 24 hours. Receipt time does not renew trust. An expired client cannot self-revive.
-- Historical queue timestamps are not independently expired. Their proofs need the latest nonzero anchor of a live client. Queue clears therefore do not erase already authenticated history.
-- Authority sets are limited to 1..256. Native claimed quorum is `N - floor((N-1)/3)`. The selected signature count is capped at `floor(N/3)+1`, with fixed floors 86/86. These are distinct checks.
-- Interactive RANDAO delay/window are fixed at 128/24 blocks. Do not weaken constants to make a deployment or test pass.
-- The adapter is immutable for one client, MessageQueue address and destination chain ID. Direct calls from an operator are not substitutes for registration through that queue.
+Install/restart compatible nodes **before** runtime upgrade, preserving database/service/keystore/password configuration and BABE/GRANDPA quorum. Old nodes are incompatible with the changed runtime ABI. New-node API v1 fallback only supports the four-key runtime **before** upgrade, not old-node operation after upgrade.
 
-## Gate 1: make the source-chain upgrade safe
+Enable offchain indexing before the first MMR insertion and establish independently operated archives. Archive flags cannot backfill pruned state or missing offchain MMR nodes. First insertion **A** is distinct from later BEEFY genesis **G**.
 
-**Source implementation completed and snapshot-qualified; network rollout and measured capacity qualification remain operational gates.** The following checklist describes required acceptance evidence, not six unimplemented source features. Follow the current operator runbook for responsibility and ordering.
+After upgrade, query finalized `state_getRuntimeVersion`/metadata and require SessionKeys API **2**, ID **`0xab3c0572291feb8b`** (pinned SDK Blake2b-64 hash of `SessionKeys`). Resolve `Staking.Bonded(stash)` and the effective signed origin. On the local released node call `author_rotateKeysWithOwner` with that account's **raw 32-byte AccountId32 hex**, not SS58 or a SCALE Vec prefix. Require returned 161-byte keys and nonempty **321-byte native proof**, then submit `session.setKeys(keys, proof)` with ordinary metadata-aware transaction tooling and verify successful finalized inner dispatch and exact `NextKeys` equality. Do not submit legacy empty proofs or export secrets.
 
-The runtime adds a fifth BEEFY key to `SessionKeys`. Existing four-key SCALE storage cannot simply be decoded as the new type. The warning next to `SessionKeys` in the Gear runtime explicitly requires a session-key migration in the same upgrade.
+Native generation uses **seed None** and rotates **all five** session keys. Every key proves `POP_ || owner`; the protocol is not genesis-/whole-bundle-bound. Old private entries remain necessary during active/queued handover. Custom keystore path/password must match on restart; password affects derivation, not file encryption. Protect filesystem/backups separately. Signing failure fails generation, but generation is nontransactional and unused private entries may remain. Presence RPCs alone do not establish actual native signing.
 
-Required work:
+## Gate 2: independently activate source BEEFY
 
-1. Implement and review the existing-state migration, including current/queued session keys and ownership bookkeeping. Define how each real BEEFY key is obtained. A zero or placeholder key is not an operational validator key.
-2. Coordinate key registration and activation with validators. Verify key ownership, uniqueness and the exact authority ordering used to compute Ethereum roots.
-3. Exercise the upgrade against a representative existing-chain snapshot, with pre/post storage checks, preserved BABE/GRANDPA operation and multiple actual session transitions.
-4. Qualify production CPU/storage/proof work, including historical trie construction. Conservative block-weight reservations and native diagnostic timings are not calibrated production benchmarks.
-5. Build without `fast-runtime` and verify the normal production timing, authority limits, runtime versioning and upgrade authorization.
-6. Bring up independent indexed proof archives **before the runtime upgrade / first MMR insertion**, not merely before activation. Verify genesis, `A`, `G`, finalized MMR counts and historical proof availability.
+At a common finalized hash check ordered active/queued bundles against current/next BEEFY lists, valid unique non-placeholder keys and validators, session mapping and exact current/next MMR IDs/lengths/roots, initialized nonzero MMR history and actual propagation. The source readiness bound is **1..1000 actual active and queued authorities**, independent of binding, desired `Staking.ValidatorCount` and dormant owners.
 
-**Upgrade exit evidence:** migration/proof-retention results, node/operator preparedness, indexed archives, weight/capacity qualification and published release hashes. After the runtime upgrade, collect actual five-key registration, active/queued propagation, native BEEFY signatures and handovers before bridge enablement. Requiring live BEEFY signatures before its introducing runtime upgrade would be circular.
+Active, queued and **electable standby** operators rotate native keys. An unready electable operator chills through existing staking; there is no new election filter or forced chilling. Dormant non-electable owners need not return/purge. Ownership proof on registration cannot guarantee private-key availability for a future elected candidate. Observe real normal-timing sessions/era changes, not a fixed delay or key-presence-only RPC.
 
-### Existing-mainnet input checkpoint (2026-10-07)
+After source approval, Root governance schedules `beefy.setNewGenesis(delayInBlocks > 0)` for a checked future execution-block-plus-delay target. The call is Operational with a separate source-1000 reservation and readiness in the argument-aware origin, including bypass dispatch. It neither requires bridge binding nor resets public-chain genesis/MMR/bridge state. Require finalized dispatch, advancing cryptographically verified native commitments, actual authority handovers and historical MMR availability across independent nodes.
 
-Read-only acquisition used finalized Vara block **36,741,398**, hash `0xa83455d6fcdf6c72f1cedad6117ae86dedd8e9716c1755c4f26bd0f13b9256d8`, through `https://rpc.vara.network` / `wss://rpc.vara.network`. Runtime metadata at that exact hash identifies **vara/11000**, state version 1. This is genuine existing state, not a synthetic genesis fixture; no transactions or validator secrets were used.
+**Native quorum is `N − floor((N−1)/3)`; N ≤ 3 is unanimous.** Destination signature sampling is distinct: existing paired policy has the `floor(N/3)+1` cap and fixed 86/86 floors (20 selected at 59 authorities, 51 at 150, 86 at 256). Check the reviewed artifact's Fiat-Shamir/interactive constants, not a blanket one-third formula. Interactive delay/window remain 128/24 destination blocks.
 
-- Current session **15540**; active validators **59**, queued validators **59**, configured `Staking.ValidatorCount` **59**, distinct stored `Session.NextKeys` registrations **112**, and original ownership records **448**. All four BABE/GRANDPA/ImOnline/AuthorityDiscovery arrays match the queued order, with all 59 owners aligned in each array.
-- The required-state snapshot includes complete Session, Historical, Staking (36,801 keys), BABE, GRANDPA, ImOnline, AuthorityDiscovery, BEEFY, GearEthBridge, Balances, Treasury and GearScheduler prefixes. Real storage at the same hash supplements System number/runtime-upgrade information, Treasury/builtin accounts and existing pallet storage versions. It contains **87** historical roots: 85 prior sessions, the current session and the queued future session.
-- The scoped input is not a whole-chain snapshot. Separate whole-chain `--checks all` qualification subsequently passed below; neither snapshot test alone proves live consensus liveness.
-- Activation requires every one of the **112 initial legacy registrations** to obtain verified proof-of-possession registration or be legitimately purged, including inactive owners. The migration counter tracks these original obligations; new proven standby registrations do not create an arbitrary global standby cap. Destination domain is unset and BEEFY must remain disabled until the approved binding and real active/queued BEEFY keys are ready.
-- The initial desired committee is already 59, so this checkpoint needs no economic target change to satisfy the bridge limit. Governance must keep future elected committees within the current bridge verifier's **256**-authority limit; the source BEEFY configuration remains **100,000**, not silently truncated to 256.
+## Gate 3: preserve legacy delivery, custody and replay state
 
-Input SHA-256 pins: required-pallet snapshot `28a7ed21c9cb1f75ad11c0cf3905b8311429ab8e29d67a338943fe177f070587`; supplemented predecessor snapshot `6715790e4609fcee2aae00248a1066eccccddc9f4a21bccb300fb0af5712b376`; real supplemental storage `2a327466216e66c507a12f3fd8f3da75abd55da7cfc5ff29a102f700cab42389`. See the deployment guide for exact execution commands and artifact qualification scope.
+Source migration/activation is not approval to replace the destination. Keep legacy GRANDPA operation until the separately reviewed cutover. Define and approve a finalized cutoff; pause source and destination/application paths as required, stop legacy writers, drain/reconcile pending roots/messages, processed nonces, supplies, balances, custody and governance references. **Source pausing does not invalidate already authenticated legacy deliveries**; control destination processing independently.
 
-Counter-aware normal-timing **20100** qualification first passed on this genuine scoped input:
+Prefer storage preservation of an existing authorized MessageQueue proxy when feasible. It has no public verifier setter: switching requires a reviewed governance-authorized mechanism, not another `initialize`, invented setter or raw storage write. Verify deployed-state storage layout, duplicate-root maturity/conflicting-root behavior, root availability, original maturity, replay state and pending admin/user deliveries. A BEEFY adapter does not repair those legacy queue semantics by itself.
 
-- The complete native `Executive::try_runtime_upgrade` ran every configured migration with pre/post checks, initialized **PendingRegistrations = 112**, preserved all **85** prior-session roots byte-for-byte, and rebuilt the current/future active snapshots.
-- One BABE ownership proof was obtained from the actual **11000** runtime using `state_call` at the pinned block (slot 597127833), not reconstructed from a test fixture. It remained valid after migration and an actual native session rotation. All **59 BABE + 59 GRANDPA** new active-authority proofs also verified before/after rotation: **119** retained real-state proofs total. BEEFY remained inactive and the bridge domain remained absent. This is externalities execution, not live network finality.
-- Native migration wall/process CPU was **132.938 / 132.588 ms**; session rotation was **2.167 / 2.170 ms**, on an Apple M4 Max. The runtime returns aggregate migration weight **501,825,000,000 ps**, or **50.1825%** of its nominal 1-second block ref-time budget. These measured local durations are not calibrated production weights; the migration reservation is conservative, not a measured historical-trie benchmark.
-- CLI 0.10.1 exercised the scoped WASM with `--checks pre-and-post`, default spec/idempotence/storage-decoding/weight checks and no warning suppression: exit 0. It decoded **13,537,711** bytes of loaded storage, retained identical roots on the second upgrade, and reported **149.0 KiB** compressed PoV and **50.18%** declared ref-time usage.
+A fresh production queue starts with empty consumed-nonce state. Since `EthMessageExt::hash` still hashes legacy nonce/source/destination/payload, it can replay old consumed messages attested under the new domain. An explicit replay/custody/application authorization migration is mandatory; do not operate unrestricted old/new queues for the same assets. Queue pause, root challenge, emergency stop and application pause are distinct controls.
 
-Qualification WASM SHA-256: `4417279b59b766c1ad894db989b6d47141f33e58c2f8f83e3cb11e5e8467b5a0`; native rlib SHA-256: `ab1cd33c027025d57cf313777970cbed2940126162fc7b2b0283ec46c624341a`. Features are normal `default,std,try-runtime`, with neither dev nor fast-runtime; these are **release-profile qualification artifacts, not an approved production build**.
+The client/adapter have immutable bindings and no resetter. Qualify expiry/irrecoverable-mismatch recovery with authorization reachable independently of an expired verifier. Replacement client/adapter/queue is a state-reconciliation operation, not a time reset or fresh deployment shortcut.
 
-### Whole-chain qualification
+## Gate 4: bind, authenticate and explicitly enable the destination
 
-The completed genuine snapshot contains **798,801** storage keys and **2,084,893,951** bytes at the same finalized predecessor hash. SHA-256: `d7089929dc7dfa2dfb6c05395708c9c95a2c52c076cdab2b76d6fe4e18cbe25a`. The final normal-timing try-runtime WASM (`329cf47b95a5aa6ffc7da62a078894aeee0f00e9169a20bf659b5dff90cbd018`) passed `--checks all`, including all configured pallet try-state checks, storage decoding, migration idempotence and unsuppressed weight checks.
+1. Verify reviewed v2-compatible destination/relay deployment, bytecode, governance, queue/client/chain bindings and source/destination identities. Actual current and queued committees and desired `Staking.ValidatorCount` must each fit **256**. Larger source committees may keep native BEEFY while destination traffic is disabled.
+2. Bind once **while paused**, through approved Root `gearEthBridge.bindDestination`: actual nonzero source genesis, nonzero 32-byte big-endian Ethereum chain ID, approved nonzero 20-byte queue. Domain is `Keccak256("vara/gear-eth-bridge-domain/v2" || sourceGenesis[32] || chainIdBE[32] || queue[20])`. Binding may precede or follow source activation; verify finalized tuple/domain/event and prohibit rebinding.
+3. Obtain a signed **post-binding** newest leaf under the exact domain, compare one finalized checkpoint on independent sources, authenticate bootstrap, initialize/verify destination and continue all intervening handovers. A pre-binding leaf is not readiness evidence. Require a later accepted nonzero MMR root before root registration.
+4. After drain/replay/custody/destination approvals, explicitly `gearEthBridge.unpause` through authorized governance. It remains **Normal**, using a separate full-bridge **256-authority allowance**, not source Operational/1000 reservation. Verify finalized dispatch, canary maturity/delivery/replay and then approve assets; retain reverse-direction services.
 
-The unmodified snapshot root reported by remote externalities, `0xa80e804affa535f70d1364a0f73b38b4a6174221bd33c25ba05e3119183f5a0e`, also matches `chain_getHeader` at the pinned finalized hash. The separate successful two-node activation/rotation/purge rehearsal is recorded in `beefy-deployment.md`; it used explicit fast dev timing, not normal mainnet timing.
+### Paired protocol invariants
 
-The second upgrade preserved root `0xdc9c2db9e8afa471bfe7dd39e9f1c98f29d09380f2ec0d1e56ca961551c37843`. Declared migration ref-time was **0.501625 s / 50.16%** of the 1-second budget; compressed PoV was **157.0 KiB**. The log contains staking warnings about historical nominator exposure exceeding current bonded stake, but the all-pallet check exited **0** and reported no weight safety issue. This does not replace reference-hardware calibration or approval of production-profile artifacts.
+- Source snapshot is **86 bytes**, `2 || "vara" || bridgeDomain[32] || parentTimestampLE[8] || initialized[1] || queueIdLE[8] || root[32]`; its Keccak hash is leaf-extra. Native commitments/version-0 113-byte outer MMR leaf stay unchanged. Historical v1 destination deployments do not prove v2 compatibility.
+- Canonical v1 queue envelope is `576 + 32N` bytes with at most 256 proof items; v0 is not a compatibility path.
+- Discover A (first MMR insertion) and G (BEEFY genesis). Authenticate finalized bootstrap C after A/G and binding, with `0 < A < C <= u32::MAX`, real parent C−1 timestamp, exact ordered current/next tuples and next ID = current ID + 1. Never substitute synthetic time or arbitrary roots.
+- New client starts with zero accepted MMR root; a later signed accepted update is required. Every update authenticates the newest leaf, even within the same set. Source time is nondecreasing, at most 120 seconds ahead, and expires strictly after 24 hours; receipt time does not renew trust and an expired client cannot self-revive.
+- Historical queue times are not independently expired but proofs require the latest nonzero anchor of a live client. Clearing a source queue does not erase authenticated history. Adapter is immutable for its client, destination chain and queue; direct operator calls cannot replace queue registration.
 
-### Final registry-scaling correction
+## Gate 5: durable operations and measured acceptance
 
-The new custom WASM benchmarks exposed that the old fixed half-block reservation hid growth in the permissionless legacy registry. Migration now retains half-block trie headroom **and adds** size-dependent upstream database read/write charges. This changes accounting, not migrated keys or activation policy; no standby-owner cap is introduced. A regression at the sampled 10,000-owner boundary fails with the old accounting and passes with the correction.
+Qualify normal-timing existing-state upgrade and sustained operation for the mainnet artifacts before enactment. Reuse the retained mainnet state and shared-migration evidence; public-testnet deployment is not a prerequisite. Fresh Alice/Bob demos and short fast-runtime smoke alone do not prove an existing-mainnet upgrade or operational readiness.
 
-The final normal-timing try-runtime artifact, SHA-256 **`685ead7f39b71dd1708910e500529097864293ce95a80a628d572f7180e795e6`**, passed the same genuine whole-chain `--checks all` rehearsal, storage decoding and idempotence. Aggregate declared ref-time is **0.66590005 s / 66.59%**, compressed PoV **157.0 KiB**, with no weight safety issue. Its idempotence root is `0x9cf3adc6f3266a15b2ad58d962a506fd50b6e6fb8ff3b5983278f6a325ff765b`; the unmodified input root still matches the pinned chain header. This supersedes the fixed-reservation artifact above.
+Relay acceptance includes durable accepted checkpoints/cursors/transaction records, canonical-inclusion reconciliation after reorgs, reconnect/catch-up of mandatory handovers, archive-loss/outage visibility, fee-payer nonce ownership and Ethereum replacement/receipt/finality reconciliation. Capture root/message proofs before source rollover, rebuild stale anchors against the latest accepted root, and verify restart without resetting either chain. Alert well before freshness expiry. Integrate real token accounting and reverse-direction services, not only a mock receiver.
 
-The full 126-test source suite and 56 native BEEFY client tests pass, as do strict all-target/all-feature Clippy checks for the runtime and affected pallets. Ten custom and six bridge benchmark cases pass native and actual WASM verification. The offline helper's three test groups also pass after extraction from the release bundle, and a native two-validator run exercised the actual helper through activation, rotation and purge. Qualification remains distinct from publication/approval of a production release and from public-network governance execution.
+Bound source admission fails closed on malformed/missing identity, absent/future BEEFY start, inconsistent MMR/descriptors/session mapping, or actual/desired >256. Scheduling a future restart blocks bound admission **immediately**. It does not automatically flip pause or reset queue/nonce/history/destination. Per-message checks are structural/capacity checks, not full committee signature/private-key checks. On unsafe liveness explicitly pause/reconcile and verify new native finality/destination progress before reopening.
 
-The ownership regressions also pass with BABE debug assertions enabled: fixtures initialize BABE before direct session rotation, matching the runtime hook contract rather than relying on release builds to omit its assertion. Native BEEFY client all-target/all-feature Clippy passes as well.
+Lowering desired count alone cannot shrink actual/queued >256; same-committee sessions may retain the old oversized set. Observe suitable actual handover/commitments rather than assuming recovery. BEEFY-only rotation preserves queue; actual GRANDPA changes retain delayed rollover. Pending-clear admission rejects all senders, including governance, preserving message/fee state; retain applicable historical and GRANDPA evidence under existing clear/reset rules.
 
-## Gate 2: preserve queue state and define recovery
+The [validator baseline and calibration contract](beefy-deployment.md#hardware-and-weight-qualification) are unchanged: 2 vCPUs ~3.4 GHz, 8 GB, Ubuntu 22.04+/GLIBC 2.35+, SSD with headroom. Native set-keys adds **2,500,000,000 ps**; enqueue adds **500,000,000 ps / 7 MiB proof bytes / 16 reads**. Full bridge-256 Normal unpause adds a separate **100,000,000,000 ps / 131,072-byte** validation reserve. Local production-profile measurements are linked above; they do not qualify the baseline host. Qualify source-1000 Operational readiness, full-value oversize rejection, migration growth and complete transition-block hooks with production max analysis, **50 steps / 20 repeats**, raw JSON and conservative margins.
 
-**Not completed by the local v1 milestone.**
+## Evidence status and handover package
 
-The current MessageQueue has no public verifier setter. It is UUPS-upgradeable and stores the verifier during initialization. Replacing the proof path on an existing proxy needs a reviewed, governance-authorized upgrade mechanism, not another `initialize` call, a raw storage write or a fictitious `setVerifier` transaction.
+Older custom-registration qualification results are superseded for this native contract; compatible predecessor snapshots remain reusable. Rerun a changed migration against the retained supported mainnet state. See [current qualification evidence](beefy-deployment.md#benchmark-calibration). Baseline-host capacity gates mainnet enactment; independent destination approvals gate the later bridge cutover. Neither is a claim that an older PR approval covers unpublished source changes.
 
-Recommended production direction: preserve the existing MessageQueue proxy and its storage when feasible. This keeps processed-message nonces, registered roots, maturity timestamps, governance references and application references in one state history. The authorized verifier-switch/recovery mechanism is still work to implement and review.
+A completed handover contains:
 
-Before any switch:
+- Reviewed immutable Gear/Bridge pins, mainnet artifacts/checksums/metadata/manifest and separate upgrade, activation and cutover approvals.
+- Supported-state migration/ownership retention, baseline capacity/weight evidence and normal-timing native registration/session/restart qualification.
+- Finalized upgrade/activation/binding/unpause dispatch receipts; deployed code/ownership/bindings; signed post-binding bootstrap and subsequent accepted roots/times/handover proofs.
+- Legacy drain/processed-nonce/custody/application reconciliation and matured canary/token delivery/replay evidence in both directions.
+- Durable relay configuration/recovery/monitoring, accountable fee-payer ownership, proof archives and explicit sign-off for retiring only the replaced Gear-to-Ethereum path.
 
-- Fix and test the deferred duplicate-root maturity and conflicting-root lifecycle behavior. V1's adapter does not repair those existing semantics.
-- Specify recovery after client expiry or an irrecoverable source mismatch. The client and adapter have immutable bindings and no resetter. A replacement client/adapter requires a separately authorized queue migration.
-- Ensure recovery authorization is usable when the old proof client is expired. A recovery procedure that can only arrive through that expired verifier is circular.
-- Preserve processed nonces, root availability, original maturity rules and pending deliveries. Test governance/admin messages as well as ordinary messages.
-- Distinguish queue pause, challenge-root and emergency-stop behavior. A paused application is not proof that all root submissions or privileged operations have stopped.
+Abort on wrong identity/binding/bytecode, source disagreement, invalid sets/signatures, missing archives/handovers, expired trust or unreconciled messages/assets. Preserve evidence and stop affected writers. After user execution, recovery is state reconciliation: old binaries, stale databases, reset client time, wiped MMR or queues are not rollback.
 
-A **fresh queue** is appropriate for an isolated test deployment. In production it starts with an empty replay ledger. Pointing the same assets/applications at both old and new queues can permit duplicate execution of historical messages. A fresh-queue production migration therefore needs an explicit source cutoff, replay-state strategy, asset/application authorization migration and reconciled pending-message ledger. Do not run both queues as unrestricted authorities for the same assets.
-
-**Exit evidence:** storage-layout checks, upgrade tests from deployed state, duplicate/conflicting-root regressions, expiry recovery, governance reachability and replay/maturity preservation.
-
-## Gate 3: deploy durable relaying and application integration
-
-The dated local-v1 milestone did not complete production relaying. The later bounded Hoodi command/follower is recorded above; it does not establish durable public-network recovery or token integration.
-
-A public-testnet/production service must add:
-
-- External Gear/Ethereum endpoints, explicit chain identity and contract bindings, secure fee-payer handling and durable state directories.
-- Persistent accepted checkpoints, source cursors and transaction records; restart reconciliation against on-chain client/queue state rather than blind replay.
-- Complete finalized commitment catch-up, mandatory handover retention, subscription reconnection and unavailable-history failures that remain visible.
-- Ethereum transaction replacement/reconciliation, receipt and finality policy, nonce ownership and stale-anchor proof regeneration. Give each independent submitting process its own fee-payer account.
-- Root and message-proof capture before the source queue clears; enough retained state to finish deliveries after restarts and clears. Reconcile inclusion reorgs and discard noncanonical proofs. The bounded local runner currently aborts if a message finalizes in a different block from its initially retained proof; this occurred during documentation validation.
-- Source/destination clock checks and freshness alerts well before the 24-hour boundary. Never synthesize a source timestamp to match Ethereum time.
-
-Integrate this service with the existing token-message delivery path. Retain Ethereum-to-Gear services, configure the intended Ethereum network in its light-client/event programs, and update contract/program addresses, token mappings, indexers and UI configuration as needed. Verify real token accounting in both directions; the local mock receiver is not a token-system acceptance test.
-
-**Exit evidence:** restart, catch-up, archive-loss and network-outage tests; source handovers during downtime; no duplicate execution; reconciled token balances; documented service configuration and monitoring.
-
-## Gate 4: qualify on isolated networks
-
-Follow the [deployment guide](beefy-deployment.md) in this order:
-
-1. Fresh local Gear + Anvil using the existing verified runner.
-2. Persistent isolated Gear + Hoodi using the implemented bounded message-only demonstration. Use valueless assets; public testnet/mainnet acceptance additionally needs private operational keys and the reviewed v2-compatible destination/relay release.
-3. A sustained rehearsal using normal source timing, realistic validator sets and an existing-state upgrade snapshot. Include outages, restarts, delayed transactions, source/destination finality and expiry recovery.
-4. Independent review of the modified consensus verifier, adapter, runtime migration, queue upgrade/recovery and operator procedures.
-
-The recorded Foundry submission measurements below are per-call test observations, not a total transaction budget or a production forecast. Interactive values cover `submitFinal`, not the preceding initial submission and RANDAO transaction.
-
-| Validators | Selected signatures | Fiat-Shamir submission gas | Interactive final gas |
-| --- | --- | --- | --- |
-| 59 | 20 | 375,330 | 372,144 |
-| 150 | 51 | 905,614 | 897,445 |
-| 256 | 86 | 1,472,624 | 1,473,756 |
-
-Budget deployment, calldata, initial/RANDAO calls, queue registration and message delivery separately on the target network.
-
-## Gate 5: execute the approved cutover
-
-This is an operator sequence to complete only after Gates 1-4 pass. Exact governance calldata and new service commands must come from the reviewed release, not from this roadmap.
-
-1. **Freeze the release.** Record Gear and Bridge commit IDs, runtime/node hashes, contract artifacts, chain identities, addresses, policy constants and the approved governance actions. Verify public PR CI/review status against those exact commits.
-2. **Inventory pending work.** Select a finalized source cutoff and reconcile pending roots, messages, processed nonces, escrow, supplies and application balances. Archive proofs/state needed to finish the old path.
-3. **Upgrade and observe the source.** Follow the operator runbook: update nodes/indexing first; enact the runtime migration; register proven keys; wait for active/queued propagation; approve and bind the destination; schedule BEEFY through governance; verify native finality and handovers. Approve the destination queue address before immutable binding, even when contract deployment must await a later authenticated bootstrap.
-4. **Authenticate bootstrap.** Compare the same finalized `C > max(A, G)` and hash on two nodes, validate the newest native proof and parent timestamp, and record source genesis, immutable domain, `A`, `G` and complete authority tuples. Reacquire a checkpoint if it is no longer fresh.
-5. **Deploy and verify contracts.** Use the reviewed existing-queue upgrade path or approved fresh-queue migration at the address already bound on the source. The adapter must match that exact chain/queue and v2 domain. For a new queue use the reviewed deterministic deployment plan, never ad hoc nonce offsets. Verify code, governance, bindings and initial zero-root client state.
-6. **Shadow the new consensus relay.** Continue strictly after bootstrap `C`, including intervening handovers. Require a later authenticated nonzero root and exact accepted source time. Compare observations before authorizing application traffic.
-7. **Switch and drain deliberately.** Execute the authorized proof-path switch, stop the old root writer at the defined cutoff, register a canary root and verify matured delivery/replay rejection. Complete the reconciled old pending ledger; do not send legacy ZK proofs to the v1 adapter.
-8. **Enable applications.** Switch the intended delivery/indexing/UI configuration and verify actual token transfers and balances in both directions. Keep reverse-direction infrastructure running.
-9. **Retire only the replaced components.** Stop old Gear-to-Ethereum proof-generation workers after the drain is complete. Keep recovery archives and any proving/verification components still used elsewhere.
-
-### Abort and recovery rules
-
-Abort before opening traffic on source disagreement, missing archives, wrong bytecode/bindings, invalid authority sets, expired trust, skipped handovers or an unreconciled pending ledger. Preserve evidence and stop the affected writers.
-
-Before any irreversible user execution, an approved plan may allow returning to the old writer. After user messages execute, recovery is a state-reconciliation operation: do not roll back to stale databases or a queue with an older replay ledger. Do not wipe source node data, reset client time or redeploy a queue as an emergency shortcut.
-
-## Handover package
-
-A migration is complete only when the release bundle contains:
-
-- Reviewed/merged PRs and immutable source/build pins for both repositories.
-- Source-chain upgrade and validator-registration evidence.
-- Deployment receipts, verified bytecode, governance ownership and immutable bindings.
-- Authenticated bootstrap and subsequent accepted commitments, with source times and proofs.
-- Pending-message/asset reconciliation and successful delivery/replay evidence.
-- Durable relay deployment/configuration, ownership of fee-payer accounts, monitoring and tested restore/recovery instructions.
-- Operator sign-off for disabling the old Gear-to-Ethereum proof path.
-
-Implementation references in `gear-tech/gear-bridges`: `ethereum/src/beefy/BeefyClient.sol`, `ethereum/src/VaraQueueRootVerifier.sol`, `ethereum/src/MessageQueue.sol`, `ethereum/test/Base.sol` and `tools/beefy-relay/src/{source.rs,rehearsal.rs}`. Resolve them against the reviewed Bridge release revision. The source-runtime counterparts are `vara/runtime/vara/src/{lib.rs,bridge_leaf.rs,migrations.rs}` in this Gear repository.
+Resolve Bridge references against its reviewed manifest revision: `ethereum/src/beefy/BeefyClient.sol`, `ethereum/src/VaraQueueRootVerifier.sol`, `ethereum/src/MessageQueue.sol`, and `tools/beefy-relay/src/`. Source counterparts include `vara/runtime/vara/src/{beefy_activation.rs,bridge_leaf.rs,session_history.rs,migrations/session_keys.rs}`, the local session/BEEFY patches and bridge pallet. See [patch provenance](substrate/README.md) and [node procedure](vara/node/README.md#beefy-upgrade-and-later-activation).

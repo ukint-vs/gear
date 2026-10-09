@@ -71,14 +71,11 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
         // Validate all input before its first write; a failure must halt, never skip.
         let (registered, _) = validate_legacy_storage(&mut reads)
             .expect("invalid session-key state; reject the release in try-runtime");
-        let pending = u32::try_from(registered)
-            .expect("too many legacy key owners; reject the release in try-runtime");
         let active = active_keys(&mut reads)
             .expect("invalid active session keys; reject the release in try-runtime");
         let historical = historical_updates(&mut reads, &active)
             .expect("invalid historical session state; reject the release in try-runtime");
         pallet_session::Pallet::<Runtime>::upgrade_keys::<SessionKeysOld, _>(migrate_keys);
-        crate::beefy_activation::PendingRegistrations::put(pending);
         ActiveSessionKeys::put(active);
         for (index, legacy, updated) in historical.into_iter().flatten() {
             LegacySessionRoots::insert(index, legacy);
@@ -188,11 +185,6 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             })
             .transpose()?;
 
-        let pending_registrations = if migrate {
-            u32::try_from(registered.len()).map_err(|_| "too many legacy key owners")?
-        } else {
-            crate::beefy_activation::PendingRegistrations::get()
-        };
         Ok(SessionKeysSnapshot {
             registered,
             queued,
@@ -200,7 +192,6 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
             beefy_genesis,
             historical,
             active,
-            pending_registrations,
         }
         .encode())
     }
@@ -212,10 +203,6 @@ impl OnRuntimeUpgrade for MigrateSessionKeys {
         ensure!(
             ActiveSessionKeys::get() == expected.active,
             "active session keys changed"
-        );
-        ensure!(
-            crate::beefy_activation::PendingRegistrations::get() == expected.pending_registrations,
-            "unproven legacy key count changed"
         );
         let mut reads = 0;
         let mut registered = Vec::new();
@@ -290,7 +277,6 @@ struct SessionKeysSnapshot {
     beefy_genesis: Option<Vec<u8>>,
     historical: [Option<HistoricalUpdate>; 2],
     active: Vec<(crate::AccountId, SessionKeys)>,
-    pending_registrations: u32,
 }
 
 fn historical_updates(
@@ -340,6 +326,13 @@ fn active_keys(reads: &mut u64) -> Result<Vec<(crate::AccountId, SessionKeys)>, 
     fn list<T: Decode>(pallet: &[u8], item: &[u8]) -> Result<Vec<T>, &'static str> {
         sp_io::storage::get(&frame_support::storage::storage_prefix(pallet, item))
             .map(|bytes| {
+                let count = parity_scale_codec::Compact::<u32>::decode(&mut &bytes[..])
+                    .map_err(|_| "invalid active authority length")?
+                    .0;
+                ensure!(
+                    count <= crate::MaxActiveValidators::get(),
+                    "active committee exceeds supported capacity"
+                );
                 Vec::<T>::decode_all(&mut &bytes[..])
                     .map_err(|_| "invalid active authority storage")
             })
@@ -413,11 +406,6 @@ fn should_migrate(reads: &mut u64) -> Result<bool, &'static str> {
             && crate::VERSION.spec_version == MIGRATION_SPEC_VERSION,
         "unsupported session-key migration version"
     );
-    inspect_map(
-        &crate::beefy_activation::RegisteredKeys::final_prefix(),
-        reads,
-        |_, _, _| Err("unexpected modern key proof on the four-key predecessor"),
-    )?;
     Ok(true)
 }
 
@@ -569,6 +557,13 @@ fn decode_old_keys(value: &[u8]) -> Result<SessionKeysOld, &'static str> {
 }
 
 fn decode_old_queue(value: &[u8]) -> Result<Vec<(crate::AccountId, SessionKeysOld)>, &'static str> {
+    let count = parity_scale_codec::Compact::<u32>::decode(&mut &value[..])
+        .map_err(|_| "invalid queued authority length")?
+        .0;
+    ensure!(
+        count <= crate::MaxActiveValidators::get(),
+        "queued committee exceeds supported capacity"
+    );
     Vec::<(crate::AccountId, SessionKeysOld)>::decode_all(&mut &value[..])
         .map_err(|_| "QueuedKeys is not the exact four-key layout")
 }
@@ -938,10 +933,8 @@ mod tests {
 
     #[test]
     fn session_keys_historical_corruption_rejects_before_any_write() {
-        let mut keys = vec![
-            pallet_session_historical::HistoricalSessions::<Runtime>::hashed_key_for(0),
-            crate::beefy_activation::RegisteredKeys::hashed_key_for(validator(1)),
-        ];
+        let mut keys =
+            vec![pallet_session_historical::HistoricalSessions::<Runtime>::hashed_key_for(0)];
         for (pallet, item) in [
             (b"Session".as_slice(), b"Validators".as_slice()),
             (b"Babe", b"Authorities"),
@@ -963,6 +956,65 @@ mod tests {
                 assert_eq!(sp_io::storage::root(StateVersion::V1), before);
             });
         }
+    }
+
+    #[test]
+    fn session_keys_migration_preserves_legacy_bridge_and_staking_intentions() {
+        for paused in [false, true] {
+            sp_io::TestExternalities::default().execute_with(|| {
+                set_last_runtime_upgrade(PREDECESSOR_SPEC_VERSION);
+                let owner = validator(1);
+                seed_old_next_keys(&[(owner.clone(), old_keys(1))]);
+                let prefs = pallet_staking::ValidatorPrefs {
+                    commission: sp_runtime::Perbill::from_percent(7),
+                    blocked: true,
+                };
+                pallet_staking::Validators::<Runtime>::insert(&owner, &prefs);
+                let queue = vec![sp_core::H256::repeat_byte(3), sp_core::H256::repeat_byte(4)];
+                let bridge = [
+                    (b"Initialized".as_slice(), true.encode()),
+                    (b"Paused", paused.encode()),
+                    (b"Queue", queue.encode()),
+                    (b"QueueId", 19u64.encode()),
+                    (b"QueueMerkleRoot", sp_core::H256::repeat_byte(5).encode()),
+                    (b"AuthoritySetHash", sp_core::H256::repeat_byte(6).encode()),
+                    (b"MessageNonce", sp_core::U256::from(23).encode()),
+                    (b"ClearTimer", 2u32.encode()),
+                ]
+                .map(|(item, value)| {
+                    (
+                        frame_support::storage::storage_prefix(b"GearEthBridge", item),
+                        value,
+                    )
+                });
+                for (key, value) in &bridge {
+                    sp_io::storage::set(key, value);
+                }
+                #[cfg(feature = "try-runtime")]
+                let snapshot = MigrateSessionKeys::pre_upgrade().unwrap();
+                MigrateSessionKeys::on_runtime_upgrade();
+                #[cfg(feature = "try-runtime")]
+                MigrateSessionKeys::post_upgrade(snapshot).unwrap();
+                for (key, value) in &bridge {
+                    assert_eq!(sp_io::storage::get(key).unwrap().as_ref(), value.as_slice());
+                }
+                assert_eq!(pallet_staking::Validators::<Runtime>::get(&owner), prefs);
+                assert!(pallet_beefy::GenesisBlock::<Runtime>::get().is_none());
+            });
+        }
+    }
+
+    #[test]
+    fn session_keys_oversized_committee_rejects_before_any_write() {
+        sp_io::TestExternalities::default().execute_with(|| {
+            set_last_runtime_upgrade(PREDECESSOR_SPEC_VERSION);
+            seed_old_queued_keys(&vec![(validator(1), old_keys(1)); 1_001]);
+            let before = sp_io::storage::root(StateVersion::V1);
+            #[cfg(feature = "try-runtime")]
+            assert!(MigrateSessionKeys::pre_upgrade().is_err());
+            assert!(std::panic::catch_unwind(MigrateSessionKeys::on_runtime_upgrade).is_err());
+            assert_eq!(sp_io::storage::root(StateVersion::V1), before);
+        });
     }
 
     #[test]
@@ -1019,14 +1071,8 @@ mod tests {
             #[cfg(feature = "try-runtime")]
             frame_support::assert_ok!(crate::Beefy::do_try_state());
             assert_eq!(pallet_beefy::SetIdSession::<Runtime>::get(0), Some(17));
-            assert_eq!(crate::beefy_activation::PendingRegistrations::get(), 2);
             #[cfg(feature = "try-runtime")]
-            {
-                crate::beefy_activation::PendingRegistrations::put(0);
-                assert!(MigrateSessionKeys::post_upgrade(state.clone()).is_err());
-                crate::beefy_activation::PendingRegistrations::put(2);
-                MigrateSessionKeys::post_upgrade(state).unwrap();
-            }
+            MigrateSessionKeys::post_upgrade(state).unwrap();
 
             for (index, (account, _)) in entries.iter().enumerate() {
                 let mut keys = pallet_session::NextKeys::<Runtime>::get(account).unwrap();

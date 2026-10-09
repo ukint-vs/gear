@@ -179,7 +179,6 @@ parameter_types! {
 }
 
 impl pallet_session::Config for Test {
-    type KeyRegistration = ();
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = AccountId;
     type ValidatorIdOf = pallet_staking::StashOf<Self>;
@@ -739,7 +738,6 @@ pub(crate) mod two_block_producers {
     );
 
     impl pallet_session::Config for Test {
-        type KeyRegistration = ();
         type RuntimeEvent = RuntimeEvent;
         type ValidatorId = AccountId;
         type ValidatorIdOf = pallet_staking::StashOf<Self>;

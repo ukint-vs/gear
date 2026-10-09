@@ -18,6 +18,8 @@ exclude = [
   "ethexe/malachite",
   "ethexe/rpc",
   "ethexe/scripts",
+  # A dependency-only SDK fixture: its all-features mode disables logging globally.
+  "substrate/test-runtime",
 ]
 
 members = [
@@ -33,6 +35,11 @@ members = [
   "substrate/sc-consensus-beefy",
   "substrate/pallet-beefy",
   "substrate/pallet-session",
+  "substrate/sp-application-crypto",
+  "substrate/sp-runtime",
+  "substrate/sp-session",
+  "substrate/rpc-api",
+  "substrate/rpc",
   "substrate/sp-allocator",
   "substrate/sp-runtime-interface-proc-macro",
   "substrate/sp-wasm-interface",
@@ -696,6 +703,15 @@ etc = "0.1.19" # vara/sdk/gcli
 toml_edit = "0.22.12" # crates-io
 directories = "5.0.1" # vara/tools/key-finder
 num-traits = { version = "0.2", default-features = false } # gear-core
+either = { version = "1.8.1", default-features = false }
+hash256-std-hasher = { version = "0.15.2", default-features = false }
+docify = "0.2.8"
+zstd = { version = "0.12.4", default-features = false }
+trie-db = { version = "0.29.1", default-features = false }
+sp-weights = { version = "31.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
+sp-statement-store = { version = "18.0.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
+sp-crypto-hashing = { version = "0.1.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
+sp-consensus-aura = { version = "0.40.0", git = "https://github.com/paritytech/polkadot-sdk.git", rev = "298f676c91d64f15f38ea7fd78f125c5889ab09c", default-features = false }
 glob = "0.3.1" # cargo-gbuild
 smallvec = "1.13.2" # vara/sdk/node-wrapper
 bytes = "1.8.0" # ethexe/malachite/core
@@ -779,6 +795,12 @@ wasm-instrument = { version = "0.4.0", git = "https://github.com/gear-tech/wasm-
 wasm-smith = { version = "0.230", git = "https://github.com/gear-tech/wasm-tools", branch = "gear-stable-1.230" }
 
 [patch."https://github.com/paritytech/polkadot-sdk.git"]
+sp-application-crypto = { path = "substrate/sp-application-crypto" }
+sp-runtime = { path = "substrate/sp-runtime" }
+sp-session = { path = "substrate/sp-session" }
+sc-rpc-api = { path = "substrate/rpc-api" }
+sc-rpc = { path = "substrate/rpc" }
+substrate-test-runtime = { path = "substrate/test-runtime" }
 pallet-beefy = { path = "substrate/pallet-beefy" }
 pallet-session = { path = "substrate/pallet-session" }
 sc-consensus-beefy = { path = "substrate/sc-consensus-beefy" }

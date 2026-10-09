@@ -491,8 +491,21 @@ pub type VaraSessionHandler = (
     Beefy,
 );
 
+pub struct VaraSessionWeight;
+impl pallet_session::WeightInfo for VaraSessionWeight {
+    fn set_keys() -> Weight {
+        // Conservative five-proof allowance; reference-hardware calibration is required.
+        <pallet_session::weights::SubstrateWeight<Runtime> as pallet_session::WeightInfo>::set_keys(
+        )
+        .saturating_add(Weight::from_parts(2_500_000_000, 0))
+    }
+
+    fn purge_keys() -> Weight {
+        <pallet_session::weights::SubstrateWeight<Runtime> as pallet_session::WeightInfo>::purge_keys()
+    }
+}
+
 impl pallet_session::Config for Runtime {
-    type KeyRegistration = beefy_activation::Registration;
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = <Self as frame_system::Config>::AccountId;
     type ValidatorIdOf = pallet_staking::StashOf<Self>;
@@ -502,7 +515,7 @@ impl pallet_session::Config for Runtime {
     type SessionManager = session_history::SessionManager;
     type SessionHandler = VaraSessionHandler;
     type Keys = SessionKeys;
-    type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+    type WeightInfo = VaraSessionWeight;
 }
 
 impl pallet_session_historical::Config for Runtime {
@@ -1273,8 +1286,38 @@ impl SortedMembers<AccountId> for GearEthBridgeAdminAccounts {
     }
 }
 
+fn bridge_readiness_weight() -> Weight {
+    // MaxEncodedLen covers both authority vectors; decode_len does not shrink their proofs.
+    Weight::from_parts(500_000_000, 7 * 1024 * 1024)
+        .saturating_add(<Runtime as frame_system::Config>::DbWeight::get().reads(16))
+}
+
+pub struct VaraEthBridgeWeight;
+impl pallet_gear_eth_bridge::WeightInfo for VaraEthBridgeWeight {
+    fn pause() -> Weight {
+        <pallet_gear_eth_bridge::weights::SubstrateWeight<Runtime> as pallet_gear_eth_bridge::WeightInfo>::pause()
+    }
+
+    fn unpause() -> Weight {
+        <pallet_gear_eth_bridge::weights::SubstrateWeight<Runtime> as pallet_gear_eth_bridge::WeightInfo>::unpause()
+            .saturating_add(bridge_readiness_weight())
+            // Separate 256-member reserve; the source 1000-member reserve exceeds Normal limits.
+            .saturating_add(Weight::from_parts(100_000_000_000, 131_072))
+    }
+
+    fn set_fee() -> Weight {
+        <pallet_gear_eth_bridge::weights::SubstrateWeight<Runtime> as pallet_gear_eth_bridge::WeightInfo>::set_fee()
+    }
+
+    fn send_eth_message() -> Weight {
+        <pallet_gear_eth_bridge::weights::SubstrateWeight<Runtime> as pallet_gear_eth_bridge::WeightInfo>::send_eth_message()
+            .saturating_add(bridge_readiness_weight())
+    }
+}
+
 impl pallet_gear_eth_bridge::Config for Runtime {
-    type DestinationBindingAllowed = beefy_activation::BindingAllowed;
+    type BridgeReadiness = bridge_leaf::BridgeReadiness;
+    type MessageReadiness = bridge_leaf::MessageReadiness;
     type RuntimeEvent = RuntimeEvent;
     type PalletId = GearEthBridgePalletId;
     type BuiltinAddress = GearEthBridgeBuiltinAddress;
@@ -1283,7 +1326,7 @@ impl pallet_gear_eth_bridge::Config for Runtime {
     type QueueCapacity = ConstU32<2048>;
     type BridgeAdmin = GearEthBridgeAdminAccount;
     type BridgePauser = GearEthBridgePauserAccount;
-    type WeightInfo = pallet_gear_eth_bridge::weights::SubstrateWeight<Runtime>;
+    type WeightInfo = VaraEthBridgeWeight;
 }
 
 parameter_types! {

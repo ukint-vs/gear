@@ -194,201 +194,81 @@ To run a Vara network validator, start the node with `--validator` and complete 
 
 ### BEEFY upgrade and later activation
 
-For an existing public testnet or mainnet, follow the [ordered operator runbook](../../beefy-deployment.md#existing-testnet-and-mainnet-operator-runbook). It separates release publication, pre-upgrade node/indexing preparation, post-upgrade key registration, governance activation and Ethereum traffic cutover. Install the published release; validators do not need to build the runtime or run maintainer benchmarks.
+For the mainnet rollout follow the [coordinator checklist](../../beefy-migration.md#mainnet-coordinator-checklist) and [mainnet operator runbook](../../beefy-deployment.md#mainnet-operator-runbook). **Node installation, runtime upgrade, source BEEFY activation and Ethereum bridge cutover are four separate actions.** Your job is to install the published node, preserve custody, register native keys after the upgrade, and report actual duty readiness. You do not build runtime WASM, run maintainer benchmarks or execute governance actions.
 
-Deploy compatible nodes and enable offchain indexing before the runtime upgrade.
-Use one runtime upgrade, then the standard governance activation call once ready.
-This follows the separation used by [Polkadot's BEEFY runtime introduction](https://github.com/polkadot-fellows/runtimes/pull/65)
-and later activation on [Kusama](https://kusama.subsquare.io/referenda/343) and
-[Polkadot](https://polkadot.subsquare.io/referenda/615). No activation-only Wasm upgrade is needed.
+#### Before the runtime upgrade
 
-The runtime uses `ext_crypto_ecdsa_verify_prehashed_version_1` for BEEFY key proofs and `ext_trie_blake2_256_root_version_2` for historical ownership roots. Both are supplied by the pinned SDK's `SubstrateHostFunctions` in the node executor. Release qualification checks the built WASM against the explicit host-import allowlist; do not disable that check.
+- [ ] Obtain the coordinator's pinned mainnet release tag/manifest; verify the published node checksum and version. Keep **`--chain vara`** explicitly: starting `gear` without a chain selects testnet.
+- [ ] Back up/protect the existing service configuration, database/base path, network identity, complete keystore and password configuration. Never send seeds, private keys, keystore files or passwords to the coordinator.
+- [ ] In your assigned window, stop the old process, install the approved binary and restart the same service/configuration. Never purge/resync or run two signers with the same keys. Keep unsafe authoring RPC loopback-only/access controlled, validator mode and consensus networking enabled.
+- [ ] Verify mainnet identity, peer connectivity, advancing finalized blocks and current validator duties after restart. Send the pre-upgrade acknowledgement; do not rotate keys until the coordinator confirms finalized API v2.
 
-Release/production PR CI builds container images without publishing them. GHCR publication is restricted to pushes to upstream `master`; PR qualification does not require registry write access.
+**Install/restart the new node BEFORE upgrading the runtime.** Old nodes are incompatible with the changed SessionKeys API v2 ABI. The new node's API v1 fallback only lets it run the four-key predecessor before upgrade; it does not make old nodes compatible with the new runtime. Do not register five-key bundles/proofs on the predecessor.
 
-The runtime upgrade leaves BEEFY inactive. The session-key migration supports the
-Vara 11000 predecessor, preserves the four existing keys and queued order, and
-adds placeholder BEEFY keys. Validators must replace those placeholders with real
-node keys before activation; they do not need to do so before the runtime upgrade.
+Enable `--enable-offchain-indexing true` before first MMR insertion at runtime upgrade. Independent proof servers use `--state-pruning archive --blocks-pruning archive` and need actual historical proof availability from that insertion; ordinary validators need not all become archives. Flags cannot recover pruned state or backfill missing offchain MMR nodes. Late servers require verified replay/recovery.
 
-Missing BEEFY authority lists are initialized empty, and the current set gets
-a session mapping if absent. Existing BEEFY records and the activation block
-remain unchanged.
+#### Upgrade and native ownership
 
-Root governance first calls `GearEthBridge.bind_destination(chain_id, queue)`.
-The chain ID is a nonzero 32-byte **big-endian** Ethereum chain ID and the queue is
-the approved original nonzero 20-byte destination contract. This one-time call
-uses the actual nonzero source genesis hash from `System.BlockHash(0)`, and derives
-`Keccak256("vara/gear-eth-bridge-domain/v2" || sourceGenesis[32] || chainIdBE[32] || queue[20])`.
-It rejects rebinding, a pre-existing conflicting domain, and binding after BEEFY
-activation. Never use raw `System.set_storage` to initialize a lane. Root remains
-trusted to control arbitrary storage, as elsewhere in the runtime.
+The exact migration is **11000 → 20100**, preserving `vara` / `vara-testnet` identity, four public-key fields, ordered active/queued sets and key ownership. It adds deterministic `0x02 || Keccak256(stash.raw32)` placeholder BEEFY keys, preserves bridge pause state/queue/nonce/owners/history, and leaves BEEFY inactive. Historical roots remain available under the migration's legacy-root retention policy. No bridge pause, binding or reset happens automatically.
 
-Every `Session.set_keys` registration now needs a 65-byte ECDSA ownership proof.
-The prehash is Keccak256 of SCALE encoding of the tuple
-`(b"vara/beefy-session-keys/v1", source_genesis, signed_account, full_session_keys)`;
-the domain is a fixed byte array (no compact-length prefix). The signature is
-compact `r[32] || s[32] || recovery_id[1]`. It binds the actual signed account,
-chain, and all five session keys. Query `Staking.Bonded(stash)` for the actual signer:
-legacy controllers and current self-controlled stashes need not use the same account.
-The actual signer also needs sufficient **unbonded liquid balance** for transaction
-fees; a fully bonded genesis stash cannot pay them from its staking lock.
-Registration ownership records are indexed by the converted validator stash; purge
-removes that record. Deterministic migration placeholders and invalid SEC1 keys
-cannot be registered, even before activation.
+After finalized enactment, check code/checksum, metadata and `state_getRuntimeVersion(finalizedHash)` for spec 20100 and SessionKeys API **2**, ID **`0xab3c0572291feb8b`** (pinned SDK Blake2b-64 hash of `SessionKeys`). Use the runbook's curl examples and approved metadata-aware queries to read `Staking.Bonded(stash)` and resolve the effective signed owner: controller where applicable or represented proxy/multisig account, not the outer fee payer.
 
-The standard `author_rotateKeys` RPC cannot produce this prehash signature from
-a keystore-only BEEFY key. Generate and securely retain a separate 32-byte ECDSA
-secret, without putting it in command-line arguments, logs, or environment variables.
-Install the committed dependency tree before handling secrets (Node 22.19.0,
-npm 10.9.3), then run the offline helper with the real source genesis, actual
-bonded signer, and current 161-byte encoded `Session.NextKeys` bundle:
+Generate on the released node using the actual effective signer's **raw 32-byte AccountId32 hex**, not SS58 text or a length-prefixed SCALE Vec:
 
-```bash
-rtk proxy npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
-rtk proxy node scripts/beefy-session-proof.mjs \
-  --genesis 0xPUBLIC_SOURCE_GENESIS --controller PUBLIC_BONDED_SIGNER \
-  --session-keys 0xPUBLIC_ENCODED_SESSION_KEYS < /protected/ecdsa-seed
-gear key insert --chain /path/to/chain.json --base-path /path/to/node \
-  --key-type beef --scheme ecdsa --suri /protected/ecdsa-seed
-```
+~~~sh
+: "${OWNER:?Set the actual raw AccountId32 hex of the effective signer}"
+[[ "$OWNER" =~ ^0x[[:xdigit:]]{64}$ ]] || exit 1
+curl --fail --silent --show-error -H 'Content-Type: application/json' \
+  --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"author_rotateKeysWithOwner\",\"params\":[\"$OWNER\"]}" \
+  http://127.0.0.1:9944
+~~~
 
-The protected file contains one 32-byte hex secret prefixed `0x`,
-and must be readable only by the operator (for example mode `0600`). The key-insert
-command reads the **file contents**, not its pathname as the secret. Alternatively
-omit `--suri` to use the CLI's secret prompt. The helper performs no networking,
-changes only the appended BEEFY public key, self-verifies the signature, and emits
-only public `sessionKeys` and `proof`. Submit those with `Session.set_keys` from
-the actual bonded signer. For later full-key rotations, pass the newly generated
-bundle to the helper and insert the matching externally generated BEEFY secret;
-keep the four other corresponding node keys in the keystore.
+Use your service's actual local RPC port. Require `result.keys` **161 bytes** in BABE/GRANDPA/ImOnline/AuthorityDiscovery/BEEFY order and nonempty `result.proof` **321 bytes**, the native five-signature tuple. Every key signs `POP_ || owner`; ECDSA possession uses normal Blake2-based signatures, not prehashed BEEFY commitment signatures, and rejects noncanonical high-S. This protocol is owner-bound, not genesis-/whole-bundle-bound. Never use `author_rotateKeys` with empty proof, manually concatenate keys or export session secrets.
 
-If importing through `author_insertKey`, preserve the literal SURI string: a typed
-`Text` wrapper can turn a `0x` seed into invalid UTF-8/BIP39 input. Key-presence
-queries alone do not prove that the node can load and sign with the private key.
-Confirm native quorum signatures in an isolated rehearsal before live activation.
+Production native generation uses **seed None** and rotates **all five keys**, not only BEEFY. Back up/protect the entire keystore and retain every old private entry until active/queued duties and offence-proof/recovery retention end. Custom `--keystore-path` and password configuration must match on restart. Password participates in derivation, **not file encryption**; secure filesystem and backups separately. Generation/proof signing failure is an RPC failure, not partial/empty-proof success; generation is nontransactional and unused keys may remain after failure. Fix configuration/errors without deleting existing keys. Presence RPCs are not proof of signing.
 
-Wait until both the exact active session snapshot and queued session bundle contain
-operational proven keys. **Every registered `Session.NextKeys` owner**, including
-standby validators, must have a proven valid BEEFY key, or purge its stale registration;
-checking only current staking candidates is insufficient. Genesis/migration count
-all existing unproved registrations in `Session.PendingRegistrations`; a valid
-first rotation or purge decrements it, and activation requires zero. Repeated
-proved registrations/purges do not decrement twice. Later permissionless standby
-registrations always require a valid proof and do not change the counter: there
-is **no global standby-owner admission ceiling** and no activation-time scan of
-all modern standby keys. Activation validates at most 256 actual current/queued
-authorities and requires the configured `Staking.ValidatorCount` target to be
-at most 256. Governance must maintain that committee policy; the SDK consensus
-storage bound remains unchanged.
+- [ ] With approved ordinary metadata-aware transaction tooling submit **`session.setKeys(keys, proof)`** from the effective account, funded with liquid unbonded fee balance. Use a generic extrinsic interface if a wizard still sends empty proof.
+- [ ] Require finalized successful inner dispatch and exact `Session.NextKeys(stash)` equality; a transaction hash is not success. No separate signer, code download or secret file is required.
+- [ ] Send the public registration acknowledgement below. Keep old keys and continue existing duties until actual queued/active propagation is observed; do not assume a fixed two-session sleep proves readiness.
 
-Governance then calls `Beefy.set_new_genesis(delay_in_blocks > 0)`, directly or
-through a Root governance wrapper. A configured SDK origin validates the immutable
-lane, all current/queued/registered keys, uniqueness, nonempty authority lists,
-current session mapping, and exact current/next MMR authority commitments. Invalid
-readiness also fails through `dispatch_bypass_filter`; a call filter alone is not
-the protection. Activation must target a checked, strictly future block. Deliberate
-BEEFY restarts remain supported through the same readiness checks and do not change
-the lane, source genesis, MMR, bridge queue, nonce, custody, or public-chain genesis.
+#### Acknowledgements to the coordinator
 
-BEEFY-only session-key changes preserve the original bridge queue. Actual GRANDPA
-authority changes retain the existing delayed queue rollover. Do not reset bridge
-storage, the MMR, custody or public-chain genesis as part of BEEFY activation.
+Report public evidence at each phase, not secrets:
 
-While a session clear is pending, shared enqueue rejects all senders, including
-governance, with `BridgeCleanupRequired`. The builtin reports that the queue needs
-cleanup. Rejected sends preserve the queue and nonce; retry after the delayed clear.
-Overflow reset rejects with `InvalidQueueReset` after an append in the current block.
-Wait for root finalization and a GRANDPA proof covering the latest overflow block.
-Governance retains its pause and capacity exemptions outside the pending-clear window.
+| Phase | Send |
+| --- | --- |
+| Before runtime enactment | Stash and effective signing account; approved release tag/node version/binary SHA-256; mainnet genesis and observed finalized block/hash; confirmation that the same service/database/keystore/password is in use, backups are protected and offchain indexing is enabled. Designated archives also confirm state/block retention and proof-service endpoints. |
+| After native registration | Finalized `vara/20100` block/hash; API v2 confirmation; effective owner as raw AccountId32; public `keys` and `proof`; registration extrinsic hash, finalized block and successful inner dispatch; exact `NextKeys(stash)` match. |
+| After propagation/activation | Observed queued and active session IDs with finalized block/hash; continued BABE/GRANDPA duties; BEEFY public key and evidence of native signing/commitment progress when active; confirmation that old keys remain retained. Let the coordinator reconcile all reports at common finalized state. |
 
-The bridge pallet continues to own the original queue, message nonce and history.
-The runtime commits its snapshot using leaf-extra version 2:
-`2 || "vara" || bridgeDomain[32] || parentTimestampLE[8] || initialized[1] || queueIdLE[8] || root[32]`.
-The Keccak hash of these 86 bytes is the MMR leaf extra. Message payloads and
-their nonce-based hashing remain unchanged.
+If an acknowledgement cannot be supplied, report the specific error immediately and do not improvise a purge, empty proof, raw storage edit or genesis reset. An electable operator unable to prepare native keys must coordinate chilling before selection; this does not authorize stopping an active signer prematurely.
 
-MMR insertion begins with the runtime upgrade, before BEEFY activation. Proof-serving
-nodes need offchain indexing before that first insertion. Relayers must distinguish
-the MMR start block from the later BEEFY genesis and follow GRANDPA authority-set
-events even when the bridge queue does not roll over. Ethereum verifier cutover,
-custody and replay preservation belong to the existing bridge contracts and actors.
-Do not change a live lane binding to introduce another destination.
+#### Independent source activation
 
-**Before any real-fund activation**, establish an explicit old/new Ethereum queue
-and token-relay freeze/cutoff, and preserve or verifiably hand over the Ethereum
-consumed-nonce/replay state and custody. The destination binding changes the
-checkpoint domain only: `EthMessageExt::hash` remains the legacy message hash over
-nonce/source/destination/payload. A freshly deployed queue with empty replay state
-can otherwise execute an already-consumed legacy message attested again under the
-new checkpoint domain. Immutable source binding does **not** solve this replay
-handover or prove that the destination contract is deployed/ready. Do not clear
-or reset the source queue or message nonce. Retain evidence of the external
-contract/state cutover and relay cutoff before approving a real-fund activation.
+Active, queued and **electable standby** operators prepare native keys; unready electable operators chill using existing staking before election. Dormant non-electable owners need not return/purge. There is no readiness election filter, forced chilling, pending-owner counter or persistent custom proof ledger. A registration proof cannot guarantee future private-key availability.
 
-Use `release` for local builds and `production` through the normal release pipeline.
-Pin the published node/runtime checksums; use a same-revision normal-timing
-try-runtime companion for migration APIs, and exercise the exact deployable WASM
-on staging. Neither byte identity between profiles nor try-runtime APIs in the
-deployable WASM are assumed.
-Mainnet uses the published `production_vara_runtime_v*.wasm` (`vara`, no dev); public testnet
-uses `testnet_vara_runtime_v*.wasm` (`vara-testnet`, dev but no fast-runtime).
-Both have normal session timing. The release node intentionally embeds the testnet
-runtime; this does not change the on-chain runtime of an existing mainnet node.
-Select the published artifact and metadata for the actual network, never by profile alone.
+Source readiness checks **1..1000 actual active/queued** authorities, independent of binding and desired `Staking.ValidatorCount`: valid unique non-placeholder keys and validators, exact ordered BEEFY lists, session mapping and current/next MMR IDs/lengths/roots, nonzero initialized history. Observe actual propagation across normal sessions/era, not a fixed sleep or key-presence response.
 
-The [published validator baseline](https://wiki.vara.network/docs/vara-network/staking/validate#hardware-requirements)
-is 2 vCPUs around 3.4 GHz (Ice Lake or equivalent), 8 GB RAM and at least 80 GB SSD
-with growth headroom. Indexed archives need separate storage sizing. BEEFY does not
-introduce a new hardware minimum here. Maintainers still need to measure migration,
-session-history, registration, activation and MMR/bridge work against the charged
-allowances on hardware qualified against that baseline. This is execution-budget
-qualification, not a task for every validator. See the runbook for the exact paths,
-existing benchmark coverage and acceptance evidence.
+After independent source approval, governance calls `beefy.setNewGenesis(delayInBlocks > 0)` for a checked future execution-block-plus-delay target. It is Operational with a separate source-1000 reservation and readiness enforced by the argument-aware origin, including bypass dispatch. No destination binding is required. It changes BEEFY start, not public-chain genesis, MMR or bridge pause/queue/nonce/custody. Observe real cryptographically valid native commitments and handovers across independent nodes. Native quorum is **N − floor((N−1)/3)**, unanimous at **N ≤ 3**. First MMR insertion A and BEEFY start G need not coincide.
 
-### Local BEEFY activation rehearsal
+#### Separately approved bridge cutover
 
-Build `cargo build --release -p gear-cli --features fast-runtime` for a **fresh,
-disposable** local chain only. This explicit feature implies `dev` and uses
-four-slot epochs; the normal epoch remains two hours. The node rejects startup
-for chain IDs other than `vara_dev` and `vara_local_testnet`. Do not publish this
-Wasm or reuse it against existing chain state. Save production artifacts and their
-hashes before a fast build overwrites `target/release/wbuild`, and rebuild the
-normal feature set for production qualification afterward.
+Keep legacy GRANDPA traffic until the approved source/destination pause, drain and reconciliation. Source pausing does not invalidate already authenticated legacy destination deliveries; enforce destination/application cutoff separately. Preserve pending messages, consumed-nonce replay state and custody; empty new queues can replay old messages because message hashing is unchanged. Maintain Ethereum-to-Gear services.
 
-Start both Alice/Bob validator nodes as above with separate disposable base paths,
-adding `--unsafe-force-node-key-generation --force-authoring`,
-`--enable-offchain-indexing true`, and `--rpc-methods unsafe`. Keep RPC bound to
-loopback. Indexing must be enabled on both nodes from genesis. Then run:
+Verify paired v2 destination bytecode/configuration/governance. Actual current **and queued**, and desired committee must each fit **256**, independently of source's 1000 bound. Bind once while paused using actual nonzero source genesis, nonzero 32-byte big-endian Ethereum chain ID and approved nonzero 20-byte queue. Domain is `Keccak256("vara/gear-eth-bridge-domain/v2" || sourceGenesis[32] || chainIdBE[32] || queue[20])`. Binding is allowed before **or after** BEEFY activation, not rebinding.
 
-```bash
-rtk proxy npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
-rtk proxy npm test --prefix scripts
-rtk proxy node scripts/beefy-activation-smoke.mjs \
-  ws://127.0.0.1:9944 ws://127.0.0.1:9945
-```
+Obtain a real signed **post-binding** leaf with that domain; independently authenticate checkpoint, initialize/verify destination and accept a subsequent nonzero root before enabling traffic. A pre-binding leaf is not readiness evidence. Explicit `gearEthBridge.unpause` remains **Normal**, with a separate full-bridge-256 allowance, not source Operational/1000 reservation. Require approved replay/custody handover and matured canary delivery/replay checks.
 
-The test rejects nonlocal RPC/chain identities, uses only valueless development
-keys, binds a test destination, registers account-scoped proofs, waits for actual
-current/queued changes, and activates through Sudo. It cryptographically checks
-real native BEEFY quorum commitments against historical MMR roots before and after
-ECDSA rotation, exercises BABE/GRANDPA/BEEFY exported ownership APIs and wrong-set
-rejection, and purges the final validator in the current ordering to check all
-three authority sets and ownership proofs. JSON output records actual session
-indices, commitments, and domain. This is a **source-chain activation rehearsal**,
-not a deployed Ethereum bridge/verifier or reference-hardware production test.
-Stop both disposable nodes after the rehearsal.
+Bound admission fails closed on structural identity/MMR/session/capacity failures and future-genesis restart **immediately**, including the scheduling block. It does not automatically change pause or reset queue/destination. Lower desired count cannot shrink actual/queued >256, and same-committee sessions may retain them; observe suitable real handover and destination progress before reopening. Per-message checks are not a guarantee of private signing. BEEFY-only rotations preserve queue; actual GRANDPA changes retain delayed rollover. Pending clear rejects all enqueue paths, including governance, without changing message/fee state. Do not use queue reset or old binaries as rollback.
 
-The pinned-tool rehearsal passed with activation at block 35, eight verified
-native quorum commitments, two-key rotation, and a two-to-one committee purge.
-Both new-key generations became current and queued; all three ownership APIs
-returned valid-owner proofs and rejected the purged owner, and GRANDPA/BEEFY
-rejected wrong set IDs. The privileged activation call is Operational so its
-conservative validation allowance also passes transaction-pool admission.
-Evidence: `/tmp/gear-beefy-final-tools-evidence.json`, SHA-256
-`cf204a95b579e45e97578def3e6c88684347e7d105ffbb36543da9404cc5dbd5`.
-Both isolated fixture nodes were stopped afterward.
+Destination sampling is separate from native quorum: existing policy caps selected signatures at `floor(N/3)+1` with fixed 86/86 floors (20/51/86 selected at 59/150/256). Verify the paired artifact's Fiat-Shamir/interactive constants; a blanket one-third formula is wrong. Interactive delay/window remain 128/24 destination blocks.
 
-For this single-block-only runtime, use try-runtime with `--disable-mbm-checks`
-and retain `--checks all`. Its multi-block simulation fabricates the predecessor
-version; do not weaken the migration guard to accept that synthetic state.
+#### Release and qualification status
+
+Mainnet uses published `production_vara_runtime_v*.wasm` and its matching production metadata, never the `testnet_vara_runtime_v*.wasm` artifact. The node's embedded testnet runtime is expected, but retain `--chain vara`. The coordinator verifies the mainnet checksums/manifest, normal timing, supported-state rehearsal and exact-artifact qualification; validators install the published node only. Public-testnet deployment is not a prerequisite for this rollout.
+
+The [published validator baseline](https://wiki.vara.network/docs/vara-network/staking/validate#hardware-requirements) stays **2 vCPUs ~3.4 GHz (Ice Lake or equivalent), 8 GB RAM, Ubuntu 22.04+ / GLIBC 2.35+, at least 80 GB SSD with headroom**; archives need separate sizing. No new BEEFY hardware minimum is introduced. Maintainers qualify baseline-host migration/session/MMR/native-registration/source-1000/full-bridge-256 and 1000-authority rejection costs; validators do not benchmark live machines.
+
+Native registration adds **2,500,000,000 ps**; enqueue adds **500,000,000 ps / 7 MiB proof bytes / 16 reads**. Full bridge-256 Normal unpause has a separate **100,000,000,000 ps / 131,072-byte** validation reserve. See [benchmark calibration](../../beefy-deployment.md#benchmark-calibration) for local production-profile measurements, raw-data hashes and 50-step/20-repeat commands. Local measurements do not qualify the published baseline host.
+
+Older custom-registration qualification results and local/Hoodi success counts are superseded; compatible predecessor snapshots remain reusable inputs. Rerun the changed runtime against pinned supported state. See [current evidence](../../beefy-deployment.md#benchmark-calibration) for measured scope and remaining release prerequisites. CI artifact checks do not authorize publication or network enactment.

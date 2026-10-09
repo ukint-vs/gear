@@ -25,7 +25,7 @@ use crate::mock::{
     TestSessionChanged, TestValidatorIdOf,
 };
 
-use codec::Decode;
+use codec::Encode;
 use sp_core::crypto::key_types::DUMMY;
 use sp_runtime::testing::UintAuthorityId;
 
@@ -38,6 +38,13 @@ fn initialize_block(block: u64) {
     SessionChanged::mutate(|l| *l = false);
     System::set_block_number(block);
     Session::on_initialize(block);
+}
+
+fn ownership_proof(owner: u64, key: u64) -> Vec<u8> {
+    let mut keys = mock::MockSessionKeys::from(UintAuthorityId(key));
+    keys.create_ownership_proof(&owner.encode())
+        .unwrap()
+        .encode()
 }
 
 #[test]
@@ -170,7 +177,7 @@ fn authorities_should_track_validators() {
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(4),
             UintAuthorityId(4).into(),
-            vec![]
+            ownership_proof(4, 4)
         ));
         force_new_session();
         initialize_block(3);
@@ -249,7 +256,7 @@ fn session_change_should_work() {
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(2),
             UintAuthorityId(5).into(),
-            vec![]
+            ownership_proof(2, 5)
         ));
         assert_eq!(
             authorities(),
@@ -287,20 +294,24 @@ fn duplicates_are_not_allowed() {
         System::set_block_number(1);
         Session::on_initialize(1);
         assert_noop!(
-            Session::set_keys(RuntimeOrigin::signed(4), UintAuthorityId(1).into(), vec![]),
+            Session::set_keys(
+                RuntimeOrigin::signed(4),
+                UintAuthorityId(1).into(),
+                ownership_proof(4, 1)
+            ),
             Error::<Test>::DuplicatedKey,
         );
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(1),
             UintAuthorityId(10).into(),
-            vec![]
+            ownership_proof(1, 10)
         ));
 
         // is fine now that 1 has migrated off.
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(4),
             UintAuthorityId(1).into(),
-            vec![]
+            ownership_proof(4, 1)
         ));
     });
 }
@@ -347,7 +358,7 @@ fn session_changed_flag_works() {
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(2),
             UintAuthorityId(5).into(),
-            vec![]
+            ownership_proof(2, 5)
         ));
         force_new_session();
         initialize_block(6);
@@ -359,7 +370,7 @@ fn session_changed_flag_works() {
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(69),
             UintAuthorityId(69).into(),
-            vec![]
+            ownership_proof(69, 69)
         ));
         force_new_session();
         initialize_block(7);
@@ -446,12 +457,96 @@ fn periodic_session_works() {
 #[test]
 fn session_keys_generate_output_works_as_set_keys_input() {
     new_test_ext().execute_with(|| {
-        let new_keys = mock::MockSessionKeys::generate(None);
+        let new_keys = mock::MockSessionKeys::generate(&2u64.encode(), None);
         assert_ok!(Session::set_keys(
             RuntimeOrigin::signed(2),
-            <mock::Test as Config>::Keys::decode(&mut &new_keys[..]).expect("Decode keys"),
-            vec![],
+            new_keys.keys,
+            new_keys.proof.encode(),
         ));
+    });
+}
+
+#[test]
+fn invalid_ownership_proofs_do_not_mutate_storage() {
+    new_test_ext().execute_with(|| {
+        let keys = mock::MockSessionKeys::from(UintAuthorityId(99));
+        let proof = ownership_proof(2, 99);
+        let mut corrupted = proof.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        let mut trailing = proof.clone();
+        trailing.push(0);
+        for invalid in [
+            ownership_proof(3, 99),
+            ownership_proof(2, 100),
+            corrupted,
+            Vec::new(),
+            proof[..proof.len() - 1].to_vec(),
+            trailing,
+        ] {
+            assert_noop!(
+                Session::set_keys(RuntimeOrigin::signed(2), keys.clone(), invalid),
+                Error::<Test>::InvalidProof
+            );
+        }
+        assert_eq!(Session::load_keys(&2), Some(UintAuthorityId(2).into()));
+        assert_eq!(Session::key_owner(DUMMY, keys.get_raw(DUMMY)), None);
+    });
+}
+
+#[test]
+fn ownership_proof_uses_controller_and_preserves_consumer_accounting() {
+    new_test_ext().execute_with(|| {
+        TestValidatorIdOf::set(vec![(10, 4)].into_iter().collect());
+        System::inc_providers(&10);
+        let keys = mock::MockSessionKeys::from(UintAuthorityId(99));
+        assert_noop!(
+            Session::set_keys(
+                RuntimeOrigin::signed(10),
+                keys.clone(),
+                ownership_proof(4, 99)
+            ),
+            Error::<Test>::InvalidProof
+        );
+        assert_ok!(Session::set_keys(
+            RuntimeOrigin::signed(10),
+            keys.clone(),
+            ownership_proof(10, 99)
+        ));
+        assert_eq!(Session::load_keys(&4), Some(keys.clone()));
+        assert_eq!(Session::load_keys(&10), None);
+        assert_eq!(Session::key_owner(DUMMY, keys.get_raw(DUMMY)), Some(4));
+        assert_eq!(System::consumers(&10), 1);
+        assert_ok!(Session::set_keys(
+            RuntimeOrigin::signed(10),
+            keys,
+            ownership_proof(10, 99)
+        ));
+        assert_eq!(System::consumers(&10), 1);
+        assert_ok!(Session::purge_keys(RuntimeOrigin::signed(10)));
+        assert_eq!(System::consumers(&10), 0);
+    });
+}
+
+#[test]
+fn valid_ownership_proof_preserves_registration_errors() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            Session::set_keys(
+                RuntimeOrigin::signed(69),
+                UintAuthorityId(99).into(),
+                ownership_proof(69, 99)
+            ),
+            Error::<Test>::NoAssociatedValidatorId
+        );
+        TestValidatorIdOf::set(vec![(5, 5)].into_iter().collect());
+        assert_noop!(
+            Session::set_keys(
+                RuntimeOrigin::signed(5),
+                UintAuthorityId(99).into(),
+                ownership_proof(5, 99)
+            ),
+            Error::<Test>::NoAccount
+        );
     });
 }
 

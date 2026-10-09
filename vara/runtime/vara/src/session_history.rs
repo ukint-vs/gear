@@ -9,13 +9,10 @@ use crate::{
 use frame_support::{Twox64Concat, pallet_prelude::ValueQuery, traits::KeyOwnerProofSystem};
 use parity_scale_codec::{DecodeAll, Encode};
 use sp_core::crypto::KeyTypeId;
-use sp_runtime::{
-    StateVersion,
-    traits::{BlakeTwo256, Hash, OpaqueKeys},
-};
+use sp_runtime::traits::{BlakeTwo256, Hash, OpaqueKeys};
 use sp_std::prelude::*;
 use sp_trie::{
-    LayoutV0, MemoryDB, Recorder, StorageProof, Trie, TrieDBBuilder, TrieMut,
+    LayoutV0, MemoryDB, Recorder, StorageProof, Trie, TrieConfiguration, TrieDBBuilder, TrieMut,
     accessed_nodes_tracker::AccessedNodesTracker, recorder_ext::RecorderExt,
     trie_types::TrieDBMutBuilderV0,
 };
@@ -53,7 +50,8 @@ fn entries(
 
 pub(crate) fn root(keys: &[(AccountId, SessionKeys)], era: Option<u32>) -> HistoricalRoot {
     (
-        sp_io::trie::blake2_256_root(entries(keys, era).collect(), StateVersion::V0),
+        // Avoid a monolithic SCALE host-call buffer for large exposure histories.
+        LayoutV0::<BlakeTwo256>::trie_root(entries(keys, era)),
         if era.is_some() { keys.len() as u32 } else { 0 },
     )
 }
@@ -180,7 +178,7 @@ mod tests {
         genesis_config_presets::{authority_keys_from_seed, local_testnet_genesis},
     };
     use frame_support::traits::OnInitialize;
-    use sp_core::Pair;
+    use sp_runtime::RuntimeAppPublic;
 
     fn proofs(keys: &SessionKeys) -> Vec<(KeyTypeId, Vec<u8>, sp_session::MembershipProof)> {
         SessionKeys::key_ids()
@@ -210,107 +208,101 @@ mod tests {
     #[test]
     fn registered_keys_never_replace_active_ownership_before_queue_activation() {
         for beefy_only in [true, false] {
-            sp_io::TestExternalities::new(local_testnet_genesis().build_storage().unwrap())
-                .execute_with(|| {
-                    System::set_block_number(1);
-                    frame_system::BlockHash::<Runtime>::insert(0, sp_core::H256::repeat_byte(7));
-                    let (owner, ..) = authority_keys_from_seed("Alice");
-                    let controller = pallet_staking::Bonded::<Runtime>::get(&owner).unwrap();
-                    let old = pallet_session::NextKeys::<Runtime>::get(&owner).unwrap();
-                    let original = proofs(&old);
-                    let old_root = Historical::historical_root(Session::current_index()).unwrap();
-                    let mut replacement = old.clone();
-                    let pair = sp_core::ecdsa::Pair::from_seed(&[91; 32]);
-                    replacement.beefy = pair.public().into();
-                    if !beefy_only {
-                        let (_, _, babe, grandpa, online, discovery, _) =
-                            authority_keys_from_seed("Charlie");
-                        replacement.babe = babe;
-                        replacement.grandpa = grandpa;
-                        replacement.im_online = online;
-                        replacement.authority_discovery = discovery;
-                    }
-                    let signature = pair.sign_prehashed(
-                        &crate::beefy_activation::registration_payload(&controller, &replacement),
-                    );
-                    Session::set_keys(
-                        RuntimeOrigin::signed(controller.clone()),
-                        replacement.clone(),
-                        signature.0.to_vec(),
+            let mut ext =
+                sp_io::TestExternalities::new(local_testnet_genesis().build_storage().unwrap());
+            ext.register_extension(sp_keystore::KeystoreExt::new(
+                sp_keystore::testing::MemoryKeystore::new(),
+            ));
+            ext.execute_with(|| {
+                System::set_block_number(1);
+                frame_system::BlockHash::<Runtime>::insert(0, sp_core::H256::repeat_byte(7));
+                let (owner, ..) = authority_keys_from_seed("Alice");
+                let controller = pallet_staking::Bonded::<Runtime>::get(&owner).unwrap();
+                let old = pallet_session::NextKeys::<Runtime>::get(&owner).unwrap();
+                let original = proofs(&old);
+                let old_root = Historical::historical_root(Session::current_index()).unwrap();
+                let mut replacement =
+                    SessionKeys::generate(&controller.encode(), Some(b"//Alice".to_vec())).keys;
+                assert_eq!(replacement, old);
+                if beefy_only {
+                    replacement.beefy =
+                        crate::BeefyId::generate_pair(Some(b"//replacement".to_vec()));
+                } else {
+                    replacement = SessionKeys::generate(
+                        &controller.encode(),
+                        Some(b"//replacement".to_vec()),
                     )
-                    .unwrap();
-                    assert_eq!(
-                        Historical::historical_root(Session::current_index()),
-                        Some(old_root)
-                    );
-                    assert_eq!(proofs(&old), original);
-                    assert!(
-                        SessionKeyOwnerProof::prove((
-                            sp_consensus_beefy::KEY_TYPE,
-                            &replacement.beefy
-                        ))
+                    .keys;
+                }
+                let proof = replacement
+                    .create_ownership_proof(&controller.encode())
+                    .unwrap()
+                    .encode();
+                Session::set_keys(
+                    RuntimeOrigin::signed(controller.clone()),
+                    replacement.clone(),
+                    proof,
+                )
+                .unwrap();
+                assert_eq!(
+                    Historical::historical_root(Session::current_index()),
+                    Some(old_root)
+                );
+                assert_eq!(proofs(&old), original);
+                assert!(
+                    SessionKeyOwnerProof::prove((sp_consensus_beefy::KEY_TYPE, &replacement.beefy))
                         .is_none()
-                    );
-                    assert_owner(&original, &owner);
-                    crate::Babe::on_initialize(System::block_number());
-                    Session::rotate_session();
-                    assert_eq!(proofs(&old)[0].2.session, 1);
-                    assert_owner(&original, &owner);
-                    assert!(
-                        SessionKeyOwnerProof::prove((
-                            sp_consensus_beefy::KEY_TYPE,
-                            &replacement.beefy
-                        ))
+                );
+                assert_owner(&original, &owner);
+                crate::Babe::on_initialize(System::block_number());
+                Session::rotate_session();
+                assert_eq!(proofs(&old)[0].2.session, 1);
+                assert_owner(&original, &owner);
+                assert!(
+                    SessionKeyOwnerProof::prove((sp_consensus_beefy::KEY_TYPE, &replacement.beefy))
                         .is_none()
-                    );
-                    System::set_block_number(2);
-                    crate::Babe::on_initialize(System::block_number());
-                    Session::rotate_session();
-                    let activated = proofs(&replacement);
-                    assert_owner(&activated, &owner);
-                    assert_owner(&original, &owner);
-                    assert!(
-                        SessionKeyOwnerProof::prove((sp_consensus_beefy::KEY_TYPE, &old.beefy))
-                            .is_none()
-                    );
-                    assert_eq!(Staking::active_era().unwrap().index, 0);
-                    // Removing a future registration must not erase the active or already queued owner.
-                    Session::purge_keys(RuntimeOrigin::signed(controller)).unwrap();
-                    assert!(pallet_session::NextKeys::<Runtime>::get(&owner).is_none());
-                    assert_owner(&proofs(&replacement), &owner);
-                    System::set_block_number(3);
-                    crate::Babe::on_initialize(System::block_number());
-                    Session::rotate_session();
-                    assert_owner(&proofs(&replacement), &owner);
-                    System::set_block_number(4);
-                    crate::Babe::on_initialize(System::block_number());
-                    Session::rotate_session();
-                    assert!(
-                        SessionKeyOwnerProof::prove((
-                            sp_consensus_beefy::KEY_TYPE,
-                            &replacement.beefy
-                        ))
+                );
+                System::set_block_number(2);
+                crate::Babe::on_initialize(System::block_number());
+                Session::rotate_session();
+                let activated = proofs(&replacement);
+                assert_owner(&activated, &owner);
+                assert_owner(&original, &owner);
+                assert!(
+                    SessionKeyOwnerProof::prove((sp_consensus_beefy::KEY_TYPE, &old.beefy))
                         .is_none()
-                    );
-                    assert_owner(&activated, &owner);
-                    assert_owner(&original, &owner);
-                    let mut future = activated[0].2.clone();
-                    future.session = Session::current_index() + 1;
-                    assert!(
-                        SessionKeyOwnerProof::check_proof(
-                            (activated[0].0, &activated[0].1),
-                            future
-                        )
+                );
+                assert_eq!(Staking::active_era().unwrap().index, 0);
+                // Removing a future registration must not erase the active or already queued owner.
+                Session::purge_keys(RuntimeOrigin::signed(controller)).unwrap();
+                assert!(pallet_session::NextKeys::<Runtime>::get(&owner).is_none());
+                assert_owner(&proofs(&replacement), &owner);
+                System::set_block_number(3);
+                crate::Babe::on_initialize(System::block_number());
+                Session::rotate_session();
+                assert_owner(&proofs(&replacement), &owner);
+                System::set_block_number(4);
+                crate::Babe::on_initialize(System::block_number());
+                Session::rotate_session();
+                assert!(
+                    SessionKeyOwnerProof::prove((sp_consensus_beefy::KEY_TYPE, &replacement.beefy))
                         .is_none()
+                );
+                assert_owner(&activated, &owner);
+                assert_owner(&original, &owner);
+                let mut future = activated[0].2.clone();
+                future.session = Session::current_index() + 1;
+                assert!(
+                    SessionKeyOwnerProof::check_proof((activated[0].0, &activated[0].1), future)
+                        .is_none()
+                );
+                Historical::prune_up_to(3);
+                for (kind, raw, proof) in original.iter().chain(&activated) {
+                    assert!(
+                        SessionKeyOwnerProof::check_proof((*kind, raw), proof.clone()).is_none()
                     );
-                    Historical::prune_up_to(3);
-                    for (kind, raw, proof) in original.iter().chain(&activated) {
-                        assert!(
-                            SessionKeyOwnerProof::check_proof((*kind, raw), proof.clone())
-                                .is_none()
-                        );
-                    }
-                });
+                }
+            });
         }
     }
 }

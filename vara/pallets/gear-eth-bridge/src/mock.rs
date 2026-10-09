@@ -279,7 +279,6 @@ impl sp_runtime::traits::Convert<AccountId, Option<<Test as pallet_session::Conf
 }
 
 impl pallet_session::Config for Test {
-    type KeyRegistration = ();
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = <Self as frame_system::Config>::AccountId;
     type ValidatorIdOf = Convert;
@@ -297,6 +296,10 @@ parameter_types! {
 
     pub MockBridgeAdminAccount: AccountId = GearEthBridgePalletId::get().into_sub_account_truncating("bridge_admin");
     pub MockBridgePauserAccount: AccountId = GearEthBridgePalletId::get().into_sub_account_truncating("bridge_pauser");
+
+    // Policy controls only: these mocks do not measure runtime source readiness.
+    pub static MockBridgeReadiness: bool = true;
+    pub static MockMessageReadiness: bool = true;
 }
 
 pub struct MockBridgeAdminAccounts;
@@ -307,7 +310,8 @@ impl SortedMembers<AccountId> for MockBridgeAdminAccounts {
 }
 
 impl pallet_gear_eth_bridge::Config for Test {
-    type DestinationBindingAllowed = frame_support::traits::ConstBool<true>;
+    type BridgeReadiness = MockBridgeReadiness;
+    type MessageReadiness = MockMessageReadiness;
     type AdminOrigin = EnsureSignedBy<MockBridgeAdminAccounts, AccountId>;
     type PalletId = GearEthBridgePalletId;
     type BuiltinAddress = MockBridgeBuiltinAddress;
@@ -342,7 +346,7 @@ impl ExtBuilder {
             .build_storage()
             .unwrap();
         crate::GenesisConfig::<Test> {
-            bridge_domain: gprimitives::H256::repeat_byte(0x44),
+            bridge_domain: gprimitives::H256::zero(),
             _config: Default::default(),
         }
         .assimilate_storage(&mut storage)
@@ -377,6 +381,8 @@ impl ExtBuilder {
         let mut ext: sp_io::TestExternalities = storage.into();
 
         ext.execute_with(|| {
+            MockBridgeReadiness::set(true);
+            MockMessageReadiness::set(true);
             on_initialize(1);
         });
         ext

@@ -18,7 +18,6 @@ extern crate alloc;
 use crate::{
     AccountId, AuthorityDiscovery, Babe, Beefy, GearEthBridge, Grandpa, ImOnline, Runtime,
     RuntimeOrigin, Session, SessionKeys, Staking, System,
-    beefy_activation::{PendingRegistrations, RegisteredKeys, registration_payload},
     migrations::{MigrateSessionKeys, SessionKeysOld, placeholder_beefy_key},
     pallet_session_historical,
     session_history::{self, ActiveSessionKeys, HistoricalRoot, LegacySessionRoots},
@@ -26,12 +25,15 @@ use crate::{
 use frame_benchmarking::benchmarks;
 use frame_support::{
     assert_ok,
-    traits::{KeyOwnerProofSystem, OnRuntimeUpgrade, OneSessionHandler},
+    traits::{
+        Currency, Get, KeyOwnerProofSystem, OnInitialize, OnRuntimeUpgrade, OneSessionHandler,
+    },
 };
 use parity_scale_codec::Encode;
-use sp_core::{H160, H256, ecdsa};
-use sp_runtime::{StateVersion, traits::OpaqueKeys};
+use sp_core::{H160, H256};
+use sp_runtime::traits::{BlakeTwo256, OpaqueKeys};
 use sp_std::{marker::PhantomData, prelude::*};
+use sp_trie::{LayoutV0, TrieConfiguration};
 
 // Like frame_system_benchmarking::Pallet: a benchmark adapter only. No call index,
 // runtime metadata, genesis configuration, or production storage is introduced.
@@ -53,12 +55,16 @@ fn old_keys(index: u32) -> SessionKeysOld {
     }
 }
 
-fn keys(index: u32) -> (SessionKeys, ecdsa::Public) {
-    let public = sp_io::crypto::ecdsa_generate(
-        sp_consensus_beefy::KEY_TYPE,
-        Some(alloc::format!("//BeefyBenchmark//{index}").into_bytes()),
+fn keys(owner: &AccountId, index: u32) -> (SessionKeys, Vec<u8>) {
+    // Raw seeds avoid repeated mnemonic derivation outside the timed benchmark.
+    let seed = H256::from(sp_io::hashing::blake2_256(
+        &(b"BeefyBenchmark", index).encode(),
+    ));
+    let generated = SessionKeys::generate(
+        &owner.encode(),
+        Some(alloc::format!("{seed:#x}").into_bytes()),
     );
-    (with_beefy(old_keys(index), public.into()), public)
+    (generated.keys, generated.proof.encode())
 }
 
 fn with_beefy(old: SessionKeysOld, beefy: crate::BeefyId) -> SessionKeys {
@@ -78,23 +84,14 @@ fn reset_registry() {
     for key in pallet_session::KeyOwner::<Runtime>::iter_keys().collect::<Vec<_>>() {
         pallet_session::KeyOwner::<Runtime>::remove(key);
     }
-    for owner in RegisteredKeys::iter_keys().collect::<Vec<_>>() {
-        RegisteredKeys::remove(owner);
-    }
-    PendingRegistrations::put(0);
     System::set_block_number(10);
     frame_system::BlockHash::<Runtime>::insert(0, H256::repeat_byte(9));
 }
 
-fn seed_registration(owner: &AccountId, keys: &SessionKeys, proved: bool) {
+fn seed_registration(owner: &AccountId, keys: &SessionKeys) {
     pallet_session::NextKeys::<Runtime>::insert(owner, keys);
     for kind in SessionKeys::key_ids() {
         pallet_session::KeyOwner::<Runtime>::insert((*kind, keys.get_raw(*kind).to_vec()), owner);
-    }
-    if proved {
-        RegisteredKeys::insert(owner, &keys.beefy);
-    } else {
-        PendingRegistrations::mutate(|n| *n += 1);
     }
 }
 
@@ -112,25 +109,15 @@ fn registration_fixture() -> (AccountId, AccountId, SessionKeys, Vec<u8>) {
         info.providers = 1;
         info.consumers = 1;
     });
-    let (keys, public) = keys(0);
-    let proof = sp_io::crypto::ecdsa_sign_prehashed(
-        sp_consensus_beefy::KEY_TYPE,
-        &public,
-        &registration_payload(&controller, &keys),
-    )
-    .expect("benchmark key exists")
-    .0
-    .to_vec();
+    let (keys, proof) = keys(&controller, 0);
     (owner, controller, keys, proof)
 }
 
 fn assert_registered(owner: &AccountId, keys: &SessionKeys) {
-    assert_eq!(RegisteredKeys::get(owner), Some(keys.beefy.clone()));
     assert_eq!(
         pallet_session::NextKeys::<Runtime>::get(owner),
         Some(keys.clone())
     );
-    assert_eq!(PendingRegistrations::get(), 0);
     for kind in SessionKeys::key_ids() {
         assert_eq!(
             Session::key_owner(*kind, keys.get_raw(*kind)),
@@ -140,9 +127,7 @@ fn assert_registered(owner: &AccountId, keys: &SessionKeys) {
 }
 
 fn assert_purged(owner: &AccountId, keys: &SessionKeys) {
-    assert!(!RegisteredKeys::contains_key(owner));
     assert!(!pallet_session::NextKeys::<Runtime>::contains_key(owner));
-    assert_eq!(PendingRegistrations::get(), 0);
     for kind in SessionKeys::key_ids() {
         assert!(Session::key_owner(*kind, keys.get_raw(*kind)).is_none());
     }
@@ -173,7 +158,13 @@ fn exposure_fixture(entries: &[(AccountId, SessionKeys)], nominators: u32) {
 }
 
 fn history_fixture(n: u32, e: u32) -> Vec<(AccountId, SessionKeys)> {
-    let entries = (0..n).map(|i| (account(i), keys(i).0)).collect::<Vec<_>>();
+    let entries = (0..n)
+        .map(|i| {
+            let owner = account(i);
+            let keys = keys(&owner, i).0;
+            (owner, keys)
+        })
+        .collect::<Vec<_>>();
     exposure_fixture(&entries, e);
     pallet_session::CurrentIndex::<Runtime>::put(17);
     pallet_session::QueuedKeys::<Runtime>::put(&entries);
@@ -181,26 +172,122 @@ fn history_fixture(n: u32, e: u32) -> Vec<(AccountId, SessionKeys)> {
 }
 
 fn legacy_root(entries: &[(AccountId, SessionKeysOld)]) -> HistoricalRoot {
-    let values = entries
-        .iter()
-        .enumerate()
-        .flat_map(|(i, (owner, keys))| {
-            let index = i as u32;
-            SessionKeysOld::key_ids()
-                .iter()
-                .map(move |kind| ((*kind, keys.get_raw(*kind)).encode(), index.encode()))
-                .chain(core::iter::once_with(move || {
-                    (
-                        index.encode(),
-                        (owner, Staking::eras_stakers(0, owner)).encode(),
-                    )
-                }))
-        })
-        .collect();
+    let values = entries.iter().enumerate().flat_map(|(i, (owner, keys))| {
+        let index = i as u32;
+        SessionKeysOld::key_ids()
+            .iter()
+            .map(move |kind| ((*kind, keys.get_raw(*kind)).encode(), index.encode()))
+            .chain(core::iter::once_with(move || {
+                (
+                    index.encode(),
+                    (owner, Staking::eras_stakers(0, owner)).encode(),
+                )
+            }))
+    });
     (
-        sp_io::trie::blake2_256_root(values, StateVersion::V0),
+        LayoutV0::<BlakeTwo256>::trie_root(values),
         entries.len() as u32,
     )
+}
+
+fn consensus_fixture(current_count: u32, next_count: u32) -> Vec<(AccountId, SessionKeys)> {
+    reset_registry();
+    pallet_beefy::GenesisBlock::<Runtime>::kill();
+    let current = (0..current_count)
+        .map(|i| {
+            let owner = account(i);
+            let keys = keys(&owner, i).0;
+            (owner, keys)
+        })
+        .collect::<Vec<_>>();
+    let next = (current_count..current_count + next_count)
+        .map(|i| {
+            let owner = account(i);
+            let keys = keys(&owner, i).0;
+            (owner, keys)
+        })
+        .collect::<Vec<_>>();
+    ActiveSessionKeys::put(&current);
+    pallet_session::QueuedKeys::<Runtime>::put(&next);
+    pallet_session::CurrentIndex::<Runtime>::put(1);
+    pallet_staking::ValidatorCount::<Runtime>::put(current_count.max(next_count));
+    fn authorities(
+        entries: &[(AccountId, SessionKeys)],
+    ) -> impl Iterator<Item = (&AccountId, crate::BeefyId)> {
+        entries
+            .iter()
+            .map(|(owner, keys)| (owner, keys.beefy.clone()))
+    }
+    <Beefy as OneSessionHandler<AccountId>>::on_new_session(
+        true,
+        authorities(&current),
+        authorities(&next),
+    );
+    crate::Mmr::on_initialize(System::block_number());
+    assert!(crate::beefy_activation::ready(
+        crate::MaxActiveValidators::get()
+    ));
+    current
+}
+
+fn bridge_fixture(current: u32, next: u32, bound: bool) {
+    let entries = consensus_fixture(current, next);
+    pallet_gear_eth_bridge::DestinationBinding::<Runtime>::kill();
+    pallet_gear_eth_bridge::BridgeDomain::<Runtime>::kill();
+    let authorities = entries
+        .iter()
+        .map(|(owner, keys)| (owner, keys.grandpa.clone()));
+    <GearEthBridge as OneSessionHandler<AccountId>>::on_new_session(
+        true,
+        authorities.clone(),
+        authorities,
+    );
+    // A handover's pending clear has completed before the measured admission.
+    GearEthBridge::on_initialize(11);
+    GearEthBridge::on_initialize(12);
+    assert_ok!(GearEthBridge::pause(RuntimeOrigin::root()));
+    if bound {
+        pallet_beefy::GenesisBlock::<Runtime>::put(Some(9));
+        assert_ok!(GearEthBridge::bind_destination(
+            RuntimeOrigin::root(),
+            H256::repeat_byte(1),
+            H160::repeat_byte(3)
+        ));
+    }
+}
+
+fn send_fixture() -> (AccountId, Vec<u8>) {
+    let sender = frame_benchmarking::account("bridge-sender", 0, 0);
+    let fee = <crate::Balances as Currency<AccountId>>::minimum_balance();
+    let _ = <crate::Balances as Currency<AccountId>>::make_free_balance_be(
+        &sender,
+        fee.saturating_mul(2),
+    );
+    assert_ok!(GearEthBridge::set_fee(RuntimeOrigin::root(), fee));
+    let capacity: u32 = <Runtime as pallet_gear_eth_bridge::Config>::QueueCapacity::get();
+    frame_support::storage::unhashed::put(
+        &frame_support::storage::storage_prefix(b"GearEthBridge", b"Queue"),
+        &vec![H256::repeat_byte(7); capacity.saturating_sub(1) as usize],
+    );
+    (
+        sender,
+        vec![
+            42;
+            <<Runtime as pallet_gear_eth_bridge::Config>::MaxPayloadSize as Get<u32>>::get()
+                as usize
+        ],
+    )
+}
+
+fn assert_sent() {
+    let queue: Vec<H256> = frame_support::storage::unhashed::get(
+        &frame_support::storage::storage_prefix(b"GearEthBridge", b"Queue"),
+    )
+    .expect("accepted queue persists");
+    assert_eq!(
+        queue.len(),
+        <<Runtime as pallet_gear_eth_bridge::Config>::QueueCapacity as Get<u32>>::get() as usize
+    );
 }
 
 benchmarks! {
@@ -213,11 +300,11 @@ benchmarks! {
         assert_registered(&owner, &keys);
     }
 
-    rotate_keys {
+    rotate_legacy_keys {
         let (owner, controller, keys, proof) = registration_fixture();
         let submitted = keys.clone();
         let previous = with_beefy(old_keys(1), placeholder_beefy_key(&owner));
-        seed_registration(&owner, &previous, false);
+        seed_registration(&owner, &previous);
     }: {
         Session::set_keys(RuntimeOrigin::signed(controller), submitted, proof)?;
     } verify {
@@ -227,11 +314,11 @@ benchmarks! {
         }
     }
 
-    rotate_proved_keys {
+    rotate_keys {
         let (owner, controller, keys, proof) = registration_fixture();
         let submitted = keys.clone();
-        let previous = self::keys(1).0;
-        seed_registration(&owner, &previous, true);
+        let (previous, previous_proof) = self::keys(&controller, 1);
+        assert_ok!(Session::set_keys(RuntimeOrigin::signed(controller.clone()), previous.clone(), previous_proof));
     }: {
         Session::set_keys(RuntimeOrigin::signed(controller), submitted, proof)?;
     } verify {
@@ -242,21 +329,20 @@ benchmarks! {
     }
 
     reject_registration {
-        let (owner, controller, keys, _) = registration_fixture();
-        let proof = sp_io::crypto::ecdsa_sign_prehashed(sp_consensus_beefy::KEY_TYPE, &self::keys(1).1, &registration_payload(&controller, &keys)).expect("benchmark key exists").0.to_vec();
+        let (owner, controller, keys, mut proof) = registration_fixture();
+        // Keep the five-signature encoding intact, but invalidate the final signature.
+        *proof.last_mut().expect("native proof is nonempty") ^= 1;
         let result;
     }: {
         result = Session::set_keys(RuntimeOrigin::signed(controller), keys, proof);
     } verify {
         assert_eq!(result, Err(pallet_session::Error::<Runtime>::InvalidProof.into()));
         assert!(!pallet_session::NextKeys::<Runtime>::contains_key(&owner));
-        assert!(!RegisteredKeys::contains_key(&owner));
-        assert_eq!(PendingRegistrations::get(), 0);
     }
 
     purge_keys {
-        let (owner, controller, keys, _) = registration_fixture();
-        seed_registration(&owner, &keys, true);
+        let (owner, controller, keys, proof) = registration_fixture();
+        assert_ok!(Session::set_keys(RuntimeOrigin::signed(controller.clone()), keys.clone(), proof));
     }: {
         Session::purge_keys(RuntimeOrigin::signed(controller))?;
     } verify {
@@ -264,8 +350,9 @@ benchmarks! {
     }
 
     purge_legacy_keys {
-        let (owner, controller, keys, _) = registration_fixture();
-        seed_registration(&owner, &keys, false);
+        let (owner, controller, _, _) = registration_fixture();
+        let keys = with_beefy(old_keys(1), placeholder_beefy_key(&owner));
+        seed_registration(&owner, &keys);
     }: {
         Session::purge_keys(RuntimeOrigin::signed(controller))?;
     } verify {
@@ -273,28 +360,72 @@ benchmarks! {
     }
 
     activate {
-        let n in 1 .. 256;
-        reset_registry();
-        pallet_beefy::GenesisBlock::<Runtime>::kill();
-        pallet_gear_eth_bridge::DestinationBinding::<Runtime>::kill();
-        pallet_gear_eth_bridge::BridgeDomain::<Runtime>::kill();
-        assert_ok!(GearEthBridge::bind_destination(RuntimeOrigin::root(), H256::repeat_byte(1), H160::repeat_byte(3)));
-        let entries = (0..n).map(|i| (account(i), keys(i).0)).collect::<Vec<_>>();
-        for (owner, keys) in &entries {
-            seed_registration(owner, keys, true);
-        }
-        ActiveSessionKeys::put(&entries);
-        pallet_session::QueuedKeys::<Runtime>::put(&entries);
-        pallet_session::CurrentIndex::<Runtime>::put(0);
-        pallet_staking::ValidatorCount::<Runtime>::put(n);
-        pallet_beefy::Authorities::<Runtime>::kill();
-        <Beefy as OneSessionHandler<AccountId>>::on_genesis_session(entries.iter().map(|(owner, keys)| (owner, keys.beefy.clone())));
+        let n in 1 .. 1000;
+        let q in 1 .. 1000;
+        consensus_fixture(n, q);
     }: {
         Beefy::set_new_genesis(RuntimeOrigin::root(), 1)?;
     } verify {
         assert_eq!(pallet_beefy::GenesisBlock::<Runtime>::get(), Some(11));
         assert_eq!(pallet_beefy::Authorities::<Runtime>::get().len(), n as usize);
-        assert_eq!(PendingRegistrations::get(), 0);
+        assert_eq!(pallet_beefy::NextAuthorities::<Runtime>::get().len(), q as usize);
+    }
+
+    bridge_unpause_bound {
+        let n in 1 .. 256;
+        let q in 1 .. 256;
+        bridge_fixture(n, q, true);
+    }: {
+        GearEthBridge::unpause(RuntimeOrigin::root())?;
+    } verify {
+        assert!(crate::bridge_leaf::BridgeReadiness::get());
+        assert_eq!(frame_support::storage::unhashed::get::<bool>(
+            &frame_support::storage::storage_prefix(b"GearEthBridge", b"Paused")), Some(false));
+    }
+
+    bridge_send_bound {
+        let n in 1 .. 256;
+        let q in 1 .. 256;
+        bridge_fixture(n, q, true);
+        assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
+        let (sender, payload) = send_fixture();
+    }: {
+        GearEthBridge::send_eth_message(RuntimeOrigin::signed(sender), H160::repeat_byte(4), payload)?;
+    } verify {
+        assert_sent();
+    }
+
+    bridge_send_legacy {
+        bridge_fixture(1, 1, false);
+        assert_ok!(GearEthBridge::unpause(RuntimeOrigin::root()));
+        let (sender, payload) = send_fixture();
+    }: {
+        GearEthBridge::send_eth_message(RuntimeOrigin::signed(sender), H160::repeat_byte(4), payload)?;
+    } verify {
+        assert_sent();
+    }
+
+    bridge_reject_capacity {
+        let n in 257 .. 1000;
+        let s in 0 .. 3;
+        let current = if s == 0 || s == 2 { n } else { 2 };
+        let next = if s == 1 || s == 2 { n } else { 2 };
+        bridge_fixture(current, next, true);
+        if s == 3 { pallet_staking::ValidatorCount::<Runtime>::put(n); }
+        // Reachable after an enabled lane's actual or desired committee grows.
+        frame_support::storage::unhashed::put(&frame_support::storage::storage_prefix(b"GearEthBridge", b"Paused"), &false);
+        let (sender, payload) = send_fixture();
+        let balance = crate::Balances::free_balance(&sender);
+        let result;
+    }: {
+        result = GearEthBridge::send_eth_message(RuntimeOrigin::signed(sender.clone()), H160::repeat_byte(4), payload);
+    } verify {
+        assert_eq!(result.unwrap_err().error, pallet_gear_eth_bridge::Error::<Runtime>::BridgeNotReady.into());
+        assert_eq!(crate::Balances::free_balance(&sender), balance);
+        let queue: Vec<H256> = frame_support::storage::unhashed::get(
+            &frame_support::storage::storage_prefix(b"GearEthBridge", b"Queue"),
+        ).unwrap();
+        assert_eq!(queue.len(), <<Runtime as pallet_gear_eth_bridge::Config>::QueueCapacity as Get<u32>>::get() as usize - 1);
     }
 
     historical_root {
@@ -336,7 +467,7 @@ benchmarks! {
     }
 
     migrate_session_keys {
-        // All registered owners, not just the <=256 active bridge authorities.
+        // Registered owners are unbounded; actual committees are supported through 1000.
         let n in 1 .. 10000;
         let e in 0 .. 1024;
         reset_registry();
@@ -351,7 +482,7 @@ benchmarks! {
                 pallet_session::KeyOwner::<Runtime>::insert((*kind, keys.get_raw(*kind).to_vec()), owner);
             }
         }
-        let validators = n.min(256) as usize;
+        let validators = n.min(crate::MaxActiveValidators::get()) as usize;
         let active = &legacy[..validators];
         let queued = &legacy[legacy.len() - validators..];
         frame_support::storage::unhashed::put(&pallet_session::QueuedKeys::<Runtime>::hashed_key(), &queued.to_vec());
@@ -379,7 +510,6 @@ benchmarks! {
     } verify {
         let storage_floor = <Runtime as frame_system::Config>::DbWeight::get().reads_writes(u64::from(n) * 6, u64::from(n) * 6);
         assert!(consumed.ref_time() >= storage_floor.ref_time(), "migration weight must scale with all registered owners");
-        assert_eq!(PendingRegistrations::get(), n);
         assert_eq!(pallet_session::NextKeys::<Runtime>::iter().count(), n as usize);
         assert_eq!(pallet_session::KeyOwner::<Runtime>::iter().count(), n as usize * 5);
         assert_eq!(ActiveSessionKeys::get(), current);

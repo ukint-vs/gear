@@ -49,20 +49,6 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag_name }}
 
-      - name: "Environment: Node.js for validator tools"
-        if: ${{ hashFiles('scripts/package-lock.json') != '' }}
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22.19.0
-          cache: npm
-          cache-dependency-path: scripts/package-lock.json
-
-      - name: "Test: Pinned offline validator tools"
-        if: ${{ hashFiles('scripts/package-lock.json') != '' }}
-        run: |
-          npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
-          npm test --prefix scripts
-
       - name: "Environment: Rust toolchain"
         uses: ./.github/actions/install-rust
 
@@ -120,15 +106,6 @@ jobs:
           cp target/production/ethexe artifact/ethexe
           strip artifact/gear || true
           strip artifact/ethexe || true
-
-      - name: "Artifact: Reproducible validator tools"
-        if: ${{ hashFiles('scripts/package-lock.json') != '' }}
-        run: |
-          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=0644 \
-            -cf - scripts/package.json scripts/package-lock.json scripts/beefy-session-proof.mjs \
-            scripts/beefy-activation-smoke.mjs scripts/beefy-tools.test.mjs \
-            beefy-deployment.md beefy-migration.md \
-            | gzip -n > artifact/beefy-validator-tools.tar.gz
 
       - name: "Check SHA256 checksums"
         run: |

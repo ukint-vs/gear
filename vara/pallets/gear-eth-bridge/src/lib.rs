@@ -93,8 +93,11 @@ pub mod pallet {
         /// Privileged origin for administrative operations.
         type AdminOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
-        /// True only while BEEFY has never been activated or scheduled.
-        type DestinationBindingAllowed: Get<bool>;
+        /// Whether the lane is ready to be enabled, including full bound-source checks.
+        type BridgeReadiness: Get<bool>;
+
+        /// Whether the lane can admit a message under its current source state.
+        type MessageReadiness: Get<bool>;
 
         /// The AccountId of the bridge admin.
         #[pallet::constant]
@@ -199,8 +202,11 @@ pub mod pallet {
         /// queue isn't overflowed or incorrect finality proof provided.
         InvalidQueueReset,
 
-        /// A lane is already bound, BEEFY is started, or an identity is zero.
+        /// A lane is already bound, is not paused, or an identity is zero.
         InvalidDestinationBinding,
+
+        /// The lane or its source consensus state is not ready.
+        BridgeNotReady,
     }
 
     /// Lifecycle storage.
@@ -289,7 +295,7 @@ pub mod pallet {
     #[pallet::storage]
     pub type TransportFee<T> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
-    /// Destination-bound BEEFY lane digest, fixed before initial BEEFY activation.
+    /// Destination-bound BEEFY lane digest, fixed once while the bridge is paused.
     #[pallet::storage]
     #[pallet::getter(fn bridge_domain)]
     pub type BridgeDomain<T> = StorageValue<_, H256, ValueQuery>;
@@ -301,7 +307,7 @@ pub mod pallet {
     #[pallet::genesis_config]
     #[derive(frame_support::DefaultNoBound)]
     pub struct GenesisConfig<T: Config> {
-        /// Destination-bound lane digest fixed when the chain is created.
+        /// Initial domain; an unbound legacy lane must use zero.
         pub bridge_domain: H256,
         /// Runtime configuration marker.
         #[serde(skip)]
@@ -368,6 +374,9 @@ pub mod pallet {
                 Initialized::<T>::get(),
                 Error::<T>::BridgeIsNotYetInitialized
             );
+
+            // Readiness applies even to Root and idempotent unpause calls.
+            ensure!(T::BridgeReadiness::get(), Error::<T>::BridgeNotReady);
 
             // Checking if pallet is paused.
             if Paused::<T>::get() {
@@ -455,7 +464,7 @@ pub mod pallet {
             Ok(Pays::No.into())
         }
 
-        /// Bind the original destination once, before BEEFY activation. Root calls are checked too.
+        /// Bind the original destination once while paused, independently of BEEFY activation.
         #[pallet::call_index(5)]
         #[pallet::weight(T::DbWeight::get().reads_writes(4, 2).saturating_add(Weight::from_parts(10_000_000, 4_096)))]
         pub fn bind_destination(
@@ -464,10 +473,7 @@ pub mod pallet {
             queue: H160,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            ensure!(
-                T::DestinationBindingAllowed::get(),
-                Error::<T>::InvalidDestinationBinding
-            );
+            ensure!(Paused::<T>::get(), Error::<T>::InvalidDestinationBinding);
             ensure!(
                 !DestinationBinding::<T>::exists() && BridgeDomain::<T>::get().is_zero(),
                 Error::<T>::InvalidDestinationBinding

@@ -121,26 +121,6 @@ pub mod weights;
 
 extern crate alloc;
 
-/// Caller-bound admission for session-key registration.
-pub trait KeyRegistration<AccountId, Keys, ValidatorId> {
-    fn validate(account: &AccountId, validator: &ValidatorId, keys: &Keys, proof: &[u8]) -> bool;
-    fn on_genesis(_validator: &ValidatorId) {}
-    fn on_registered(validator: &ValidatorId, keys: &Keys, had_keys: bool);
-    fn on_purged(validator: &ValidatorId);
-    fn weight() -> frame_support::weights::Weight;
-}
-
-impl<AccountId, Keys, ValidatorId> KeyRegistration<AccountId, Keys, ValidatorId> for () {
-    fn validate(_: &AccountId, _: &ValidatorId, _: &Keys, _: &[u8]) -> bool {
-        true
-    }
-    fn on_registered(_: &ValidatorId, _: &Keys, _: bool) {}
-    fn on_purged(_: &ValidatorId) {}
-    fn weight() -> frame_support::weights::Weight {
-        frame_support::weights::Weight::zero()
-    }
-}
-
 use alloc::{boxed::Box, vec::Vec};
 use codec::{Decode, MaxEncodedLen};
 use core::{
@@ -440,12 +420,6 @@ pub mod pallet {
         /// The keys.
         type Keys: OpaqueKeys + Member + Parameter + MaybeSerializeDeserialize;
 
-        /// Additional account-bound key ownership validation.
-        ///
-        /// Vara requires its proof-of-possession validator. Use `()` only in runtimes
-        /// that do not require additional account-bound ownership checks.
-        type KeyRegistration: KeyRegistration<Self::AccountId, Self::Keys, Self::ValidatorId>;
-
         /// Weight information for extrinsics in this pallet.
         type WeightInfo: WeightInfo;
     }
@@ -484,11 +458,8 @@ pub mod pallet {
                 });
 
             for (account, val, keys) in self.keys.iter().chain(self.non_authority_keys.iter()) {
-                let old_keys = Pallet::<T>::inner_set_keys(val, keys)
+                Pallet::<T>::inner_set_keys(val, keys)
                     .expect("genesis config must not contain duplicates; qed");
-                if old_keys.is_none() {
-                    T::KeyRegistration::on_genesis(val);
-                }
                 if frame_system::Pallet::<T>::inc_consumers_without_limit(account).is_err() {
                     // This will leak a provider reference, however it only happens once (at
                     // genesis) so it's really not a big deal and we assume that the user wants to
@@ -608,20 +579,21 @@ pub mod pallet {
         /// This doesn't take effect until the next session.
         ///
         /// The dispatch origin of this function must be signed.
+        /// `proof` must prove possession of every key for the SCALE-encoded signed account.
         ///
         /// ## Complexity
         /// - `O(1)`. Actual cost depends on the number of length of `T::Keys::key_ids()` which is
         ///   fixed.
         #[pallet::call_index(0)]
-        #[pallet::weight(T::WeightInfo::set_keys().saturating_add(T::KeyRegistration::weight()))]
+        #[pallet::weight(T::WeightInfo::set_keys())]
         pub fn set_keys(origin: OriginFor<T>, keys: T::Keys, proof: Vec<u8>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(
-                keys.ownership_proof_is_valid(&proof),
+                who.using_encoded(|owner| keys.ownership_proof_is_valid(owner, &proof)),
                 Error::<T>::InvalidProof
             );
 
-            Self::do_set_keys(&who, keys, &proof)?;
+            Self::do_set_keys(&who, keys)?;
             Ok(())
         }
 
@@ -638,7 +610,7 @@ pub mod pallet {
         /// - `O(1)` in number of key types. Actual cost depends on the number of length of
         ///   `T::Keys::key_ids()` which is fixed.
         #[pallet::call_index(1)]
-        #[pallet::weight(T::WeightInfo::purge_keys().saturating_add(T::KeyRegistration::weight()))]
+        #[pallet::weight(T::WeightInfo::purge_keys())]
         pub fn purge_keys(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             Self::do_purge_keys(&who)?;
@@ -840,7 +812,7 @@ impl<T: Config> Pallet<T> {
     ///
     /// This ensures that the reference counter in system is incremented appropriately and as such
     /// must accept an account ID, rather than a validator ID.
-    fn do_set_keys(account: &T::AccountId, keys: T::Keys, proof: &[u8]) -> DispatchResult {
+    fn do_set_keys(account: &T::AccountId, keys: T::Keys) -> DispatchResult {
         let who = T::ValidatorIdOf::convert(account.clone())
             .ok_or(Error::<T>::NoAssociatedValidatorId)?;
 
@@ -848,12 +820,7 @@ impl<T: Config> Pallet<T> {
             frame_system::Pallet::<T>::can_inc_consumer(account),
             Error::<T>::NoAccount
         );
-        ensure!(
-            T::KeyRegistration::validate(account, &who, &keys, proof),
-            Error::<T>::InvalidProof
-        );
         let old_keys = Self::inner_set_keys(&who, &keys)?;
-        T::KeyRegistration::on_registered(&who, &keys, old_keys.is_some());
         if old_keys.is_none() {
             let assertion = frame_system::Pallet::<T>::inc_consumers(account).is_ok();
             debug_assert!(
@@ -918,7 +885,6 @@ impl<T: Config> Pallet<T> {
             let key_data = old_keys.get_raw(*id);
             Self::clear_key_owner(*id, key_data);
         }
-        T::KeyRegistration::on_purged(&who);
         frame_system::Pallet::<T>::dec_consumers(account);
 
         Ok(())

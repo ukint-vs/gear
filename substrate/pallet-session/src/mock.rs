@@ -55,6 +55,10 @@ pub struct PreUpgradeMockSessionKeys {
 impl OpaqueKeys for PreUpgradeMockSessionKeys {
     type KeyTypeIdProviders = ();
 
+    fn ownership_proof_is_valid(&self, _owner: &[u8], _proof: &[u8]) -> bool {
+        false
+    }
+
     fn key_ids() -> &'static [KeyTypeId] {
         &[KEY_ID_A, KEY_ID_B]
     }
@@ -254,7 +258,6 @@ impl Convert<u64, Option<u64>> for TestValidatorIdOf {
 }
 
 impl Config for Test {
-    type KeyRegistration = ();
     type ShouldEndSession = TestShouldEndSession;
     #[cfg(feature = "historical")]
     type SessionManager = crate::historical::NoteHistoricalRoot<Test, TestSessionManager>;

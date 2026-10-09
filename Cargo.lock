@@ -8324,7 +8324,6 @@ dependencies = [
  "soketto",
  "sp-api",
  "sp-api-proc-macro",
- "sp-application-crypto",
  "sp-arithmetic",
  "sp-authority-discovery",
  "sp-block-builder",
@@ -8348,7 +8347,6 @@ dependencies = [
  "sp-npos-elections",
  "sp-offchain",
  "sp-runtime-interface",
- "sp-session",
  "sp-state-machine",
  "sp-std",
  "sp-storage",
@@ -17026,8 +17024,8 @@ dependencies = [
 [[package]]
 name = "sc-rpc"
 version = "40.0.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
+ "assert_matches",
  "futures",
  "jsonrpsee",
  "log",
@@ -17036,15 +17034,21 @@ dependencies = [
  "sc-block-builder",
  "sc-chain-spec",
  "sc-client-api",
+ "sc-keystore",
  "sc-mixnet",
+ "sc-network",
  "sc-rpc-api",
  "sc-tracing",
+ "sc-transaction-pool",
  "sc-transaction-pool-api",
  "sc-utils",
  "serde_json",
  "sp-api",
  "sp-blockchain",
+ "sp-consensus",
  "sp-core",
+ "sp-crypto-hashing 0.1.0 (git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c)",
+ "sp-io",
  "sp-keystore",
  "sp-offchain",
  "sp-rpc",
@@ -17052,13 +17056,15 @@ dependencies = [
  "sp-session",
  "sp-statement-store",
  "sp-version",
+ "substrate-test-runtime-client",
+ "tempfile",
  "tokio",
+ "wat",
 ]
 
 [[package]]
 name = "sc-rpc-api"
 version = "0.44.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
  "jsonrpsee",
  "parity-scale-codec",
@@ -17072,7 +17078,7 @@ dependencies = [
  "sp-rpc",
  "sp-runtime",
  "sp-version",
- "thiserror 1.0.69",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -18423,13 +18429,14 @@ dependencies = [
 [[package]]
 name = "sp-application-crypto"
 version = "38.0.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
+ "k256",
  "parity-scale-codec",
  "scale-info",
  "serde",
  "sp-core",
  "sp-io",
+ "sp-keystore",
 ]
 
 [[package]]
@@ -18882,7 +18889,6 @@ dependencies = [
 [[package]]
 name = "sp-runtime"
 version = "39.0.5"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
  "docify",
  "either",
@@ -18895,14 +18901,21 @@ dependencies = [
  "rand 0.8.5",
  "scale-info",
  "serde",
+ "serde_json",
  "simple-mermaid",
+ "sp-api",
  "sp-application-crypto",
  "sp-arithmetic",
  "sp-core",
  "sp-io",
+ "sp-keystore",
+ "sp-state-machine",
  "sp-std",
+ "sp-tracing",
  "sp-weights",
+ "substrate-test-runtime-client",
  "tracing",
+ "zstd 0.12.4",
 ]
 
 [[package]]
@@ -18939,7 +18952,6 @@ dependencies = [
 [[package]]
 name = "sp-session"
 version = "36.0.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
  "parity-scale-codec",
  "scale-info",
@@ -19543,7 +19555,6 @@ dependencies = [
 [[package]]
 name = "substrate-test-runtime"
 version = "2.0.0"
-source = "git+https://github.com/paritytech/polkadot-sdk.git?rev=298f676c91d64f15f38ea7fd78f125c5889ab09c#298f676c91d64f15f38ea7fd78f125c5889ab09c"
 dependencies = [
  "array-bytes",
  "frame-executive",

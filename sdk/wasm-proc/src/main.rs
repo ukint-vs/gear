@@ -11,12 +11,14 @@ use std::{collections::HashSet, fs, path::PathBuf};
 use tracing_subscriber::EnvFilter;
 use wasmparser::{Parser as WasmParser, Payload, TypeRef};
 
-const RT_ALLOWED_IMPORTS: [&str; 81] = [
+const RT_ALLOWED_IMPORTS: [&str; 83] = [
     // From `Allocator` (substrate/primitives/io/src/lib.rs)
     "ext_allocator_free_version_1",
     "ext_allocator_malloc_version_1",
     // From `Crypto` (substrate/primitives/io/src/lib.rs)
     "ext_crypto_ecdsa_generate_version_1",
+    "ext_crypto_ecdsa_sign_version_1",
+    "ext_crypto_ecdsa_verify_version_2",
     "ext_crypto_ecdsa_verify_prehashed_version_1",
     "ext_crypto_ed25519_generate_version_1",
     "ext_crypto_ed25519_verify_version_1",

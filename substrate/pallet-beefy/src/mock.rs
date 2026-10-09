@@ -163,7 +163,6 @@ parameter_types! {
 }
 
 impl pallet_session::Config for Test {
-    type KeyRegistration = ();
     type RuntimeEvent = RuntimeEvent;
     type ValidatorId = u64;
     type ValidatorIdOf = pallet_staking::StashOf<Self>;

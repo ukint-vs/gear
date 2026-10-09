@@ -22,6 +22,9 @@ benchmarks! {
     pause {
         // Initially pallet is uninitialized so we hack it for benchmarks.
         crate::Initialized::<T>::put(true);
+        // Generic benchmarks use the legacy lane, not runtime BEEFY readiness fixtures.
+        crate::DestinationBinding::<T>::kill();
+        crate::BridgeDomain::<T>::kill();
 
         // Initially pallet is paused so we need to unpause it first.
         assert!(Pallet::<T>::unpause(RawOrigin::Root.into()).is_ok());
@@ -33,6 +36,8 @@ benchmarks! {
     unpause {
         // Initially pallet is uninitialized so we hack it for benchmarks.
         crate::Initialized::<T>::put(true);
+        crate::DestinationBinding::<T>::kill();
+        crate::BridgeDomain::<T>::kill();
     }: _(RawOrigin::Root)
     verify {
         assert!(!crate::Paused::<T>::get());
@@ -50,6 +55,7 @@ benchmarks! {
         frame_system::BlockHash::<T>::insert(frame_system::pallet_prelude::BlockNumberFor::<T>::from(0u32), genesis);
         crate::DestinationBinding::<T>::kill();
         crate::BridgeDomain::<T>::kill();
+        crate::Paused::<T>::put(true);
         let chain_id = H256::repeat_byte(1);
         let queue = H160::repeat_byte(3);
     }: _(RawOrigin::Root, chain_id, queue)
@@ -62,6 +68,8 @@ benchmarks! {
     send_eth_message {
         // Initially pallet is uninitialized so we hack it for benchmarks.
         crate::Initialized::<T>::put(true);
+        crate::DestinationBinding::<T>::kill();
+        crate::BridgeDomain::<T>::kill();
 
         // Set fee to minimum balance for the benchmark.
         assert!(Pallet::<T>::set_fee(RawOrigin::Root.into(), CurrencyOf::<T>::minimum_balance()).is_ok());

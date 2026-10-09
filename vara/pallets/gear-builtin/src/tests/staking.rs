@@ -865,7 +865,6 @@ mod util {
     }
 
     impl pallet_session::Config for Test {
-        type KeyRegistration = ();
         type RuntimeEvent = RuntimeEvent;
         type ValidatorId = AccountId;
         type ValidatorIdOf = pallet_staking::StashOf<Self>;
