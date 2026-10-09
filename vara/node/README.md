@@ -215,7 +215,8 @@ After finalized enactment, check code/checksum, metadata and `state_getRuntimeVe
 
 Generate on the released node using the actual effective signer's **raw 32-byte AccountId32 hex**, not SS58 text or a length-prefixed SCALE Vec:
 
-~~~sh
+~~~bash
+set -euo pipefail
 : "${OWNER:?Set the actual raw AccountId32 hex of the effective signer}"
 [[ "$OWNER" =~ ^0x[[:xdigit:]]{64}$ ]] || exit 1
 curl --fail --silent --show-error -H 'Content-Type: application/json' \
@@ -253,15 +254,9 @@ After independent source approval, governance calls `beefy.setNewGenesis(delayIn
 
 #### Separately approved bridge cutover
 
-Keep legacy GRANDPA traffic until the approved source/destination pause, drain and reconciliation. Source pausing does not invalidate already authenticated legacy destination deliveries; enforce destination/application cutoff separately. Preserve pending messages, consumed-nonce replay state and custody; empty new queues can replay old messages because message hashing is unchanged. Maintain Ethereum-to-Gear services.
+Bridge cutover is the coordinator's separately approved operation, not a validator registration step. Continue the assigned consensus duties and retain old keys, historical proofs and archives. Do not independently pause/unpause the bridge, bind a destination, purge keys or schedule a BEEFY restart to repair readiness. Report finality, signing and proof-service failures immediately.
 
-Verify paired v2 destination bytecode/configuration/governance. Actual current **and queued**, and desired committee must each fit **256**, independently of source's 1000 bound. Bind once while paused using actual nonzero source genesis, nonzero 32-byte big-endian Ethereum chain ID and approved nonzero 20-byte queue. Domain is `Keccak256("vara/gear-eth-bridge-domain/v2" || sourceGenesis[32] || chainIdBE[32] || queue[20])`. Binding is allowed before **or after** BEEFY activation, not rebinding.
-
-Obtain a real signed **post-binding** leaf with that domain; independently authenticate checkpoint, initialize/verify destination and accept a subsequent nonzero root before enabling traffic. A pre-binding leaf is not readiness evidence. Explicit `gearEthBridge.unpause` remains **Normal**, with a separate full-bridge-256 allowance, not source Operational/1000 reservation. Require approved replay/custody handover and matured canary delivery/replay checks.
-
-Bound admission fails closed on structural identity/MMR/session/capacity failures and future-genesis restart **immediately**, including the scheduling block. It does not automatically change pause or reset queue/destination. Lower desired count cannot shrink actual/queued >256, and same-committee sessions may retain them; observe suitable real handover and destination progress before reopening. Per-message checks are not a guarantee of private signing. BEEFY-only rotations preserve queue; actual GRANDPA changes retain delayed rollover. Pending clear rejects all enqueue paths, including governance, without changing message/fee state. Do not use queue reset or old binaries as rollback.
-
-Destination sampling is separate from native quorum: existing policy caps selected signatures at `floor(N/3)+1` with fixed 86/86 floors (20/51/86 selected at 59/150/256). Verify the paired artifact's Fiat-Shamir/interactive constants; a blanket one-third formula is wrong. Interactive delay/window remain 128/24 destination blocks.
+The [coordinator gates](../../beefy-migration.md#gate-3-preserve-legacy-delivery-custody-and-replay-state) cover legacy delivery, destination verification, replay/custody reconciliation and explicit unpause. Source activation alone does not authorize bridge traffic or asset movement.
 
 #### Release and qualification status
 
@@ -269,6 +264,4 @@ Mainnet uses published `production_vara_runtime_v*.wasm` and its matching produc
 
 The [published validator baseline](https://wiki.vara.network/docs/vara-network/staking/validate#hardware-requirements) stays **2 vCPUs ~3.4 GHz (Ice Lake or equivalent), 8 GB RAM, Ubuntu 22.04+ / GLIBC 2.35+, at least 80 GB SSD with headroom**; archives need separate sizing. No new BEEFY hardware minimum is introduced. Maintainers qualify baseline-host migration/session/MMR/native-registration/source-1000/full-bridge-256 and 1000-authority rejection costs; validators do not benchmark live machines.
 
-Native registration adds **2,500,000,000 ps**; enqueue adds **500,000,000 ps / 7 MiB proof bytes / 16 reads**. Full bridge-256 Normal unpause has a separate **100,000,000,000 ps / 131,072-byte** validation reserve. See [benchmark calibration](../../beefy-deployment.md#benchmark-calibration) for local production-profile measurements, raw-data hashes and 50-step/20-repeat commands. Local measurements do not qualify the published baseline host.
-
-Older custom-registration qualification results and local/Hoodi success counts are superseded; compatible predecessor snapshots remain reusable inputs. Rerun the changed runtime against pinned supported state. See [current evidence](../../beefy-deployment.md#benchmark-calibration) for measured scope and remaining release prerequisites. CI artifact checks do not authorize publication or network enactment.
+Maintainer [weight qualification](../../beefy-deployment.md#hardware-and-weight-qualification) and the [durable release record](../../beefy-deployment.md#evidence-status-and-handover) define the required evidence. Follow the coordinator's pinned approved manifest, not local benchmark hashes or historical test totals. CI checks alone do not authorize publication or network enactment.

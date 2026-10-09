@@ -21,11 +21,13 @@ Production-profile artifacts are a [release-workflow](.github/workflows/release.
 Use the published `gear` node with **`--chain vara`**, `production_vara_runtime_v2_01_00.wasm` and `production_vara_runtime_v2_01_00_metadata.scale`, checked against `SHA256SUMS`. The runtime must exclude `dev`, `fast-runtime`, `try-runtime` and `runtime-benchmarks`. Do not upload `testnet_vara_runtime_v*.wasm` or a try-runtime companion.
 
 Inspect the approved release tag through the release API; this lists artifacts,
-not an approval to use a different or latest release. Verify downloaded node/WASM
-files against the approved mainnet checksum manifest. API asset digests, where
-present, do not replace the reviewed network-specific manifest.
+not an approval to use a different or latest release. Verify downloaded node, WASM
+and metadata files against the approved mainnet checksum manifest. API asset digests,
+where present, do not replace that manifest. Run the shell examples in Bash; stop
+on any failed command or JSON-RPC error before proceeding.
 
-~~~sh
+~~~bash
+set -euo pipefail
 : "${RELEASE_TAG:?Set the approved immutable release tag}"
 curl --fail --silent --show-error \
   "https://api.github.com/repos/gear-tech/gear/releases/tags/$RELEASE_TAG" \
@@ -34,6 +36,8 @@ curl --fail --silent --show-error \
 printf '%s  %s\n' "$NODE_SHA256" "$NODE_ARTIFACT" | sha256sum --check -
 : "${RUNTIME_ARTIFACT:?Set the correct network WASM}" "${RUNTIME_SHA256:?Set its approved SHA-256}"
 printf '%s  %s\n' "$RUNTIME_SHA256" "$RUNTIME_ARTIFACT" | sha256sum --check -
+: "${METADATA_ARTIFACT:?Set the matching mainnet metadata}" "${METADATA_SHA256:?Set its approved SHA-256}"
+printf '%s  %s\n' "$METADATA_SHA256" "$METADATA_ARTIFACT" | sha256sum --check -
 ~~~
 
 Mainnet uses normal three-second slots, two-hour sessions and six-session/twelve-hour eras. The release node intentionally embeds the testnet runtime; mainnet nodes execute the actual on-chain mainnet WASM, selected with `--chain vara`. Use a same-revision mainnet try-runtime companion only for migration APIs, never as upgrade WASM. Byte identity across profiles is not assumed.
@@ -46,7 +50,8 @@ Testnet uses the same runtime with `dev` enabled. The native session-key migrati
 
 Using pinned try-runtime CLI **0.10.1**:
 
-~~~sh
+~~~bash
+set -euo pipefail
 : "${SNAPSHOT:?Select the retained supported mainnet snapshot}" "${TRY_RUNTIME_WASM:?Select the matching mainnet companion}"
 test -f "$SNAPSHOT" || exit 1
 try-runtime --runtime "$TRY_RUNTIME_WASM" on-runtime-upgrade \
@@ -75,7 +80,8 @@ At common finalized state, use approved metadata-aware query tooling to read `St
 
 Read-only HTTP JSON-RPC examples (Bash, curl and jq):
 
-~~~sh
+~~~bash
+set -euo pipefail
 : "${SOURCE_HTTP:?Set the approved mainnet HTTP RPC}"
 SPEC_NAME=vara
 FINALIZED_HASH="$(curl --fail --silent --show-error -H 'Content-Type: application/json' \
@@ -96,7 +102,8 @@ The SessionKeys API ID **`0xab3c0572291feb8b`** is derived by the pinned SDK run
 
 After finalized API v2 is live, use the released node's local unsafe **`author_rotateKeysWithOwner`**. Set `OWNER` to the actual effective signer's **raw 32-byte AccountId32 hex**: not SS58 text or a length-prefixed SCALE Vec. Production generation uses the configured keystore and **seed None**, not a deterministic development seed.
 
-~~~sh
+~~~bash
+set -euo pipefail
 : "${OWNER:?Set the actual effective raw AccountId32 hex}"
 [[ "$OWNER" =~ ^0x[[:xdigit:]]{64}$ ]] || exit 1
 NATIVE_KEYS="$(curl --fail --silent --show-error -H 'Content-Type: application/json' \
@@ -115,7 +122,8 @@ This rotates **all five keys**, not only BEEFY. Migration's preservation of four
 
 The operator's approved transaction tool can produce an ordinary signed extrinsic for RPC transport (this command neither signs nor checks finalization):
 
-~~~sh
+~~~bash
+set -euo pipefail
 : "${SIGNED_EXTRINSIC:?Set the approved signed session.setKeys extrinsic}"
 [[ "$SIGNED_EXTRINSIC" =~ ^0x[[:xdigit:]]+$ ]] || exit 1
 curl --fail --silent --show-error -H 'Content-Type: application/json' \
@@ -175,7 +183,7 @@ Maintainers use a reproducible dedicated host safe for that baseline, recording 
 
 | Path | Scope / accounting |
 | --- | --- |
-| Native registration | Five proofs, effective-controller conversion, invalid proof, repeated full rotation/purge. Retains upstream base set-keys plus **2,500,000,000 ps**; local measured registration maximum below is covered, with baseline qualification still required. |
+| Native registration | Five proofs, effective-controller conversion, invalid proof, repeated full rotation/purge. Retains upstream base set-keys plus **2,500,000,000 ps**; qualify this allowance on the baseline host. |
 | Source activation/restart | Independent actual active/queued **1000/1000**, uniqueness, keys, history/MMR commitments; conservative half-Operational-maximum validation reservation plus real wrapper admission. |
 | Full bridge unpause | Full **256/256** verification, Normal; upstream unpause plus structural allowance below and a separate **100,000,000,000 ps / 131,072-byte** validation reserve. Normal admission is covered by the runtime budget check. |
 | Enqueue/rejection | Bound/legacy last-free-slot, max payload, structural checks and oversize rejection through 1000. Base enqueue plus **500,000,000 ps, 7 MiB proof bytes and 16 DB reads**. Proof reserve covers full declared authority-vector encoding, not only their length prefixes. |
@@ -184,36 +192,14 @@ Maintainers use a reproducible dedicated host safe for that baseline, recording 
 
 ### Benchmark calibration
 
-**Local production-profile evidence is not baseline-host qualification.** The 2026-10-08 M4 Max run used macOS 27.2, 14 cores, 36 GiB RAM, Rust 1.99.0-nightly (`87e5904f5`, pinned nightly-2026-07-21), compiled WASM, 50 steps / 20 repeats and max analysis. Full 256/256 unpause recorded 2,000 samples: maximum 12,998,000 ns and 117,598 measured proof bytes. Its separate 100 ms reserve exceeds that observed CPU maximum by 7.69×; measured proof bytes do not replace declared-storage proof bounds. All runtime benchmark correctness cases and the filtered 41-case runtime suite passed; full calibration and supported-state evidence are recorded separately as completed.
+Keep machine-specific timings, test totals, unpublished artifact hashes and raw logs in development evidence, not this operator procedure. Before enactment, promote the required records to the reviewed durable archive and link them from the release record. Local measurements on faster hardware do not qualify the published validator baseline.
 
-Unpause raw JSON SHA-256: `5584fb9d00a093f2a1d8117a3e2565aab0facb4c786adbfd75016c06bb28cff5`; benchmark node SHA-256: `d3480e8d91430bbb9041d3e87e8938533bbc57a85a7ada596d17327e70ccc150`; embedded benchmark WASM SHA-256: `b30e645cde148dc6d824952d5298c42c233d1b3aebab6fe6913f47389e254a03`. This measurement predates only the pricing-reserve update; it is not a deployable artifact or release approval. Retain raw data/logs and qualify the unchanged published baseline separately.
+The pinned SDK may panic in per-storage proof analysis after collecting native samples (`analysis.rs:286`, empty slopes). A failed benchmark command is not qualification: inspect its log and confirm that every requested execution/verification case and sample completed before considering the raw-input CPU analysis below. Stop on any other error or incomplete data. Raw-input analysis lacks storage metadata and emits zero estimated proof sizes: **never install those generated weights**. Retain declared-storage proof bounds and conservative adapters; qualify CPU and proof budgets independently.
 
-The complete 50-step/20-repeat native calibration retained **14,140 timing samples**. Raw `native-all.json` SHA-256: `f73f3af02a9d7419770fbe35ac52e478a9938888d46b27d8d64c553b6eb1ba1c`. All measured execution/verification cases finished; the original command then hit an upstream per-storage proof-analysis panic (`analysis.rs:286`, empty slopes). CPU max analysis completed successfully from the unchanged raw JSON. JSON-input analysis lacks storage metadata and emits zero estimated proof sizes: **do not install those generated weights**. Keep declared-storage proof bounds and the existing conservative adapters.
+On the qualified host use production profile, **50 steps / 20 repeats**, and a durable evidence directory. Run collection and analysis separately so failures cannot silently flow into later steps:
 
-| Native path | Samples | Maximum time (ms) | Maximum measured proof (bytes) |
-| --- | ---: | ---: | ---: |
-| `register_keys` | 20 | 0.155 | 967 |
-| `rotate_legacy_keys` | 20 | 0.152 | 1432 |
-| `rotate_keys` | 20 | 0.150 | 1432 |
-| `reject_registration` | 20 | 0.116 | 0 |
-| `purge_keys` | 20 | 0.032 | 1228 |
-| `purge_legacy_keys` | 20 | 0.022 | 1228 |
-| `activate` | 2000 | 39.358 | 452630 |
-| `bridge_unpause_bound` | 2000 | 10.036 | 117598 |
-| `bridge_send_bound` | 2000 | 0.347 | 84526 |
-| `bridge_send_legacy` | 20 | 0.218 | 66001 |
-| `bridge_reject_capacity` | 2000 | 0.261 | 67091 |
-| `historical_root` | 2000 | 27.775 | 8702231 |
-| `session_start` | 2000 | 19.527 | 8752109 |
-| `migrate_session_keys` | 2000 | 686.668 | 73379655 |
-
-The registration allowance alone exceeds its observed maximum by 16.1×; the unchanged source reservation exceeds the 39.358 ms activation maximum. The 0.5 ms structural allowance alone exceeds the complete bound-send and rejection maxima; existing base and DB charges remain additional. The migration figures are not a promise that 10,000 owners fit a block: size-dependent DB charges must still pass supported-state upgrade qualification. History/session measurements cover their named hooks, not a full transition-block baseline qualification.
-
-Ordinary bridge calibration and storage-aware max analysis passed separately. Raw `bridge-all.json` SHA-256: `e6b3a48776131c216c3c2dbb4044d68d276a917752062279c371b8b329bff6a3`; each path has 20 samples. Maximum times: pause 0.007 ms, legacy unpause 0.007 ms, fee update 0.005 ms, binding 0.013 ms, send 0.214 ms, full-queue finalization 0.557 ms. These local measurements do not replace reference-hardware weights.
-
-On the qualified host use production profile, **50 steps / 20 repeats**, durable raw JSON/logs:
-
-~~~sh
+~~~bash
+set -euo pipefail
 : "${BENCH_EVIDENCE_DIR:?Set a durable existing evidence directory}"
 cargo build -p gear-cli --profile production --locked \
   --features runtime-benchmarks,runtime-benchmarks-checkers
@@ -223,6 +209,13 @@ target/production/gear benchmark pallet --chain=dev --steps=50 --repeat=20 \
   --heap-pages=16384 --pallet=beefy_benchmarks --extrinsic='*' \
   --output-analysis=max --output-pov-analysis=max \
   --json-file="$BENCH_EVIDENCE_DIR/native-all.json" > "$BENCH_EVIDENCE_DIR/native-all.log" 2>&1
+~~~
+
+Only after checking the collection result and raw-data completeness:
+
+~~~bash
+set -euo pipefail
+: "${BENCH_EVIDENCE_DIR:?Set the same durable evidence directory}"
 # Raw-input CPU analysis avoids the pinned SDK per-storage proof regression bug.
 target/production/gear benchmark pallet --json-input="$BENCH_EVIDENCE_DIR/native-all.json" \
   --output-analysis=max --output-pov-analysis=max \
@@ -240,24 +233,14 @@ Measure registration/purge/migration/history/session/MMR and ordinary bridge pat
 
 ## Evidence status and handover
 
-Older custom-registration qualification results, helper artifacts and local/Hoodi success counts are superseded for this native contract. Compatible full predecessor snapshots remain reusable inputs: pin their original block/hash/root and rerun the changed runtime, rather than downloading again solely because the state is older.
+Keep the operator procedures versioned with the implementation. Development plans, review notes, raw logs and historical local success counts stay outside the repository. They are not release approval. Move required qualification evidence out of temporary storage into the reviewed durable archive before relying on it for a rollout gate.
 
-### Supported-state and native restart evidence
+The coordinator publishes an immutable artifact manifest and appends phase-specific records referencing it:
 
-The changed mainnet companion passed try-runtime 0.10.1 `--checks all` with spec checks, full decoding, configured try-state checks, idempotence and weight warnings enabled. Only unsupported multi-block simulation was disabled. Reused input: `vara/11000`, finalized block **36,741,398**, hash `0xa83455d6fcdf6c72f1cedad6117ae86dedd8e9716c1755c4f26bd0f13b9256d8`, snapshot SHA-256 `d7089929dc7dfa2dfb6c05395708c9c95a2c52c076cdab2b76d6fe4e18cbe25a`. Its loaded root exactly matched the recorded header root `0xa80e804affa535f70d1364a0f73b38b4a6174221bd33c25ba05e3119183f5a0e`.
+- Reviewed source commit/tag, review and final-head CI links, workflow run, mainnet node/WASM/metadata checksums, runtime identity and spec/transaction/API versions, feature/timing configuration and actual chain genesis. Mainnet production metadata is built as `vara_runtime_prod.scale`; `vara_runtime.scale` is the testnet metadata.
+- Retained mainnet snapshot checksum, finalized block/hash/header root and predecessor identity; matching try-runtime companion checksum; complete migration/decoding/try-state/idempotence/weight results and historical ownership-proof evidence. Reuse the compatible snapshot without changing its identity; a public-testnet snapshot or deployment is not required.
+- Baseline-host inventory, benchmark commands/ranges/repetitions, raw samples/logs, measured-versus-charged CPU and proof bounds, live owner/exposure inventory and capacity margin. Include normal-timing exact-deployable-WASM staging, native registration, restart and session/era handover evidence.
+- Operator custody/readiness acknowledgements, independent archive endpoints and proof availability, governance approvals and successful finalized inner-dispatch receipts for upgrade and source activation. Append observed propagation, commitments and handovers as they occur.
+- For the later bridge cutover: separately reviewed paired revision/deployment identities, destination approvals/bindings, finalized binding/unpause receipts, signed post-binding bootstrap and subsequent accepted roots, legacy drain/replay/custody reconciliation, canary results and durable relay recovery evidence.
 
-The `vara/20100` companion SHA-256 is `53f25d30357f1f4547e4b13875c2efd8c7b28ac5985fa122d66ab382032ba4f6`. Reapplication retained root `0x33b1b600a3ae43347c7a3b9474f2b55a2761faf54b76fb31ff1c821dc75b2e0a`. Reported migration ref-time was **0.66585 s of 1 s**, compressed PoV **157.0 KiB**; the CLI reported no weight safety issues. Staking warnings about nominator stake exceeding bonded stake remained visible. This proves the pinned supported-state rehearsal, not deployable-artifact staging or future state-size capacity.
-
-The disposable native CI fixture passed source activation before binding, domain-authenticated MMR proofs, protected Bob restart without bootstrap Bob, later all-five-key rotation and purge. Before rotation, a fresh **2-of-2 commitment at block 73** exceeded the restart baseline best block 72 (finalized 67, prior commitment 65). BABE/GRANDPA/BEEFY ownership proofs, old-key/purged-owner rejection and wrong-set rejection passed. Public before/after JSON SHA-256: `b1484327f995f0e4fa1bc2246378b3b00fa39dd3cfa94d3c7e712f80565b6b2b` / `b668b3250a6bd9ff69ee1724f37819c040c9c1c8c684a98649e2eff47fdb63f5`. Fast timing is confined to this disposable smoke.
-
-Normal-timing production mainnet and testnet builds passed the runtime import and network-identity checks. Retained compressed WASM SHA-256: mainnet `7b5315797348d25c64f45e3ada4be833dfa9ed26c04fa6bc44658b224602e6e3`, testnet `6ba9b8310ecc5c19119af1878ec7e06e07a1d170121fe79f2afdc08cb18b7863`; matching metadata SHA-256: `8d80e0b960df461b8336bfee4ece964deaeddecef26224301ca87199a36c851c` / `313833576171c1fcd2e8f4b4a17d18324e9c2facd821a61d886b037494c7dcd1`. These are local qualification artifacts, not an approved release. The complete debug all-target/all-feature workspace suite passed **2,268 tests, 19 skipped**; the SDK fixture stays dependency-only so its optional logging-disable feature cannot alter unrelated tests.
-
-Final-source production and try-runtime rebuilds reproduced these WASM hashes; the reused mainnet snapshot passed again with the same root and accounting. Metadata identities were decoded and checked separately: mainnet uses `vara_runtime_prod.scale` (`vara/20100`), testnet uses `vara_runtime.scale` (`vara-testnet/20100`). Do not pair a mainnet WASM with the testnet metadata filename.
-
-Strict all-target/all-feature workspace clippy passed with both the CI-disabled and restored workspace-hack configurations. Generated dependencies were restored and `cargo hakari manage-deps --dry-run` was clean; the all-feature graph does not enable `sp-api/disable-logging`. The explicit SDK ownership/RPC package suite passed **122 tests, none skipped**.
-
-The complete release all-target/all-feature suite passed **2,274 tests, 18 skipped**, using the existing authenticated GitHub environment for the template-list integration request. The initial unauthenticated run passed 2,273 tests and failed that external request; its failure evidence is retained. No test was disabled or weakened.
-
-Local raw evidence is retained under `/tmp/vara-beefy-final-qualified/`; copy it into the reviewed durable release archive before approval. Shared-runtime migration qualification is complete using the retained mainnet snapshot and the separate `dev` tests/build checks. The unavailable public-testnet endpoints do not block this implementation acceptance. Baseline-host measurements, network-specific exact deployable-WASM staging, reviewed release manifests and independent network/destination approvals remain release gates.
-
-Mainnet handover requires immutable reviewed pins/checksums, mainnet metadata/manifest and state inventory, shared migration/proof-retention evidence, baseline measurements, normal-timing native restart/session evidence, finalized approvals/receipts, post-binding bootstrap/accepted roots, destination replay/custody reconciliation and durable relay recovery. Unpublished release facts, exact-artifact staging, baseline calibration and independent destination approvals remain explicit deployment prerequisites, not a requirement to deploy public testnet first. See [migration gates](beefy-migration.md) and [node operation](vara/node/README.md#beefy-upgrade-and-later-activation).
+Review and CI gate merging; verified artifact identity gates release publication; capacity, exact-artifact staging, current operator readiness and governance gate enactment. Source activation and bridge cutover have separate approvals. Do not mark future receipts complete or require destination approval to publish the node or activate the source. See the [coordinator gates](beefy-migration.md) and [validator procedure](vara/node/README.md#beefy-upgrade-and-later-activation).
