@@ -316,6 +316,15 @@ fn historical_updates(
             "missing staking era for active authorities"
         );
         *reads = reads.saturating_add(keys.len() as u64);
+        if index == current && !keys.is_empty() {
+            // Authenticate positional keys: GRANDPA can lag even after a delayed change applies.
+            ensure!(
+                crate::session_history::root_with_key_ids(keys, era, SessionKeysOld::key_ids())
+                    == legacy,
+                "active authority provenance is not authenticated by the current four-key historical commitment"
+            );
+            *reads = reads.saturating_add(keys.len() as u64);
+        }
         *update = Some((index, legacy, crate::session_history::root(keys, era)));
     }
     Ok(updates)
@@ -582,7 +591,7 @@ fn migrate_keys(validator: crate::AccountId, old: SessionKeysOld) -> SessionKeys
 mod tests {
     use super::*;
     use crate::{BeefyId, session_history::SessionKeyOwnerProof};
-    use frame_support::traits::{KeyOwnerProofSystem, OnInitialize};
+    use frame_support::traits::{KeyOwnerProofSystem, OnFinalize, OnInitialize};
     use sp_core::Pair;
     use sp_runtime::{StateVersion, traits::BlakeTwo256};
     use sp_trie::{LayoutV0, Trie, TrieDBBuilder};
@@ -927,6 +936,67 @@ mod tests {
                 }
                 assert_owned_proofs(&legacy_queued);
                 assert_owned_proofs(&next);
+            });
+        }
+    }
+
+    #[test]
+    fn session_keys_rejects_unauthenticated_active_grandpa_before_any_write() {
+        for applied in [false, true] {
+            sp_io::TestExternalities::default().execute_with(|| {
+                set_last_runtime_upgrade(PREDECESSOR_SPEC_VERSION);
+                crate::System::set_block_number(1);
+                let original = [(validator(1), old_keys(1)), (validator(2), old_keys(2))];
+                let reordered = [original[1].clone(), original[0].clone()];
+                <(Babe, Grandpa, ImOnline, AuthorityDiscovery) as pallet_session::SessionHandler<
+                    crate::AccountId,
+                >>::on_genesis_session(&original);
+                // A supported-predecessor forced change remains pending across a session change.
+                Grandpa::schedule_change(Grandpa::grandpa_authorities(), 5, Some(0)).unwrap();
+                pallet_session::CurrentIndex::<Runtime>::put(18);
+                pallet_session::Validators::<Runtime>::put(
+                    reordered
+                        .iter()
+                        .map(|(owner, _)| owner.clone())
+                        .collect::<Vec<_>>(),
+                );
+                Babe::on_initialize(crate::System::block_number());
+                <(Babe, Grandpa, ImOnline, AuthorityDiscovery) as pallet_session::SessionHandler<
+                    crate::AccountId,
+                >>::on_new_session(true, &reordered, &reordered);
+                if applied {
+                    crate::System::set_block_number(6);
+                    Grandpa::on_finalize(6);
+                }
+                assert_eq!(Grandpa::pending_change().is_none(), applied);
+                assert!(
+                    sp_io::storage::get(&frame_support::storage::storage_prefix(
+                        b"Grandpa", b"Stalled",
+                    ))
+                    .is_none()
+                );
+                pallet_staking::ActiveEra::<Runtime>::put(pallet_staking::ActiveEraInfo {
+                    index: 0,
+                    start: None,
+                });
+                pallet_staking::CurrentEra::<Runtime>::put(0);
+                // Future registrations cannot authenticate the active keys' owners.
+                seed_old_next_keys(&[(validator(1), old_keys(31)), (validator(2), old_keys(32))]);
+                seed_old_queued_keys(&reordered);
+                let (legacy, proofs) = legacy_history(&reordered, 0, 18);
+                pallet_session_historical::HistoricalSessions::<Runtime>::insert(18, legacy);
+                pallet_session_historical::HistoricalSessions::<Runtime>::insert(19, legacy);
+                pallet_session_historical::StoredRange::<Runtime>::put((18, 20));
+                assert_owned_proofs(&proofs);
+                // The old positional reconstruction would assign validator 1's GRANDPA key to 2.
+                let reconstructed = active_keys(&mut 0).unwrap();
+                assert_eq!(reconstructed[0].0, validator(2));
+                assert_eq!(reconstructed[0].1.grandpa, original[0].1.grandpa);
+                let before = sp_io::storage::root(StateVersion::V1);
+                #[cfg(feature = "try-runtime")]
+                assert!(MigrateSessionKeys::pre_upgrade().is_err());
+                assert!(std::panic::catch_unwind(MigrateSessionKeys::on_runtime_upgrade).is_err());
+                assert_eq!(sp_io::storage::root(StateVersion::V1), before);
             });
         }
     }

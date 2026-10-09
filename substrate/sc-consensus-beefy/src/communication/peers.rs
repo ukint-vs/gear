@@ -3,10 +3,14 @@
 
 //! Logic for keeping track of BEEFY peers.
 
+use futures::task::AtomicWaker;
 use sc_network::ReputationChange;
 use sc_network_types::PeerId;
 use sp_runtime::traits::{Block, NumberFor, Zero};
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    task::{Context, Poll},
+};
 
 /// Report specifying a reputation change for a given peer.
 #[derive(Debug, PartialEq)]
@@ -31,19 +35,40 @@ impl<B: Block> Default for PeerData<B> {
 /// and the most recent voting round they participated in.
 pub struct KnownPeers<B: Block> {
     live: HashMap<PeerId, PeerData<B>>,
+    progress_revision: u64,
+    progress_waker: AtomicWaker,
 }
 
 impl<B: Block> KnownPeers<B> {
     pub fn new() -> Self {
         Self {
             live: HashMap::new(),
+            progress_revision: 0,
+            progress_waker: AtomicWaker::new(),
         }
     }
 
     /// Note vote round number for `peer`.
     pub fn note_vote_for(&mut self, peer: PeerId, round: NumberFor<B>) {
         let data = self.live.entry(peer).or_default();
-        data.last_voted_on = round.max(data.last_voted_on);
+        if round > data.last_voted_on {
+            data.last_voted_on = round;
+            self.progress_revision = self.progress_revision.wrapping_add(1);
+            self.progress_waker.wake();
+        }
+    }
+
+    pub(crate) fn progress_revision(&self) -> u64 {
+        self.progress_revision
+    }
+
+    pub(crate) fn poll_progress(&self, cx: &mut Context<'_>, revision: u64) -> Poll<()> {
+        if self.progress_revision != revision {
+            Poll::Ready(())
+        } else {
+            self.progress_waker.register(cx.waker());
+            Poll::Pending
+        }
     }
 
     /// Remove connected `peer`.

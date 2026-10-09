@@ -26,16 +26,17 @@ pub(crate) type ActiveSessionKeys =
 #[frame_support::storage_alias]
 pub(crate) type LegacySessionRoots = StorageMap<Historical, Twox64Concat, u32, HistoricalRoot>;
 
-fn entries(
-    keys: &[(AccountId, SessionKeys)],
+fn entries<'a>(
+    keys: &'a [(AccountId, SessionKeys)],
     era: Option<u32>,
-) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+    key_ids: &'static [KeyTypeId],
+) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a {
     era.into_iter().flat_map(move |era| {
         keys.iter()
             .enumerate()
             .flat_map(move |(index, (account, keys))| {
                 let index = index as u32;
-                SessionKeys::key_ids()
+                key_ids
                     .iter()
                     .map(move |kind| ((*kind, keys.get_raw(*kind)).encode(), index.encode()))
                     .chain(core::iter::once_with(move || {
@@ -49,9 +50,17 @@ fn entries(
 }
 
 pub(crate) fn root(keys: &[(AccountId, SessionKeys)], era: Option<u32>) -> HistoricalRoot {
+    root_with_key_ids(keys, era, SessionKeys::key_ids())
+}
+
+pub(crate) fn root_with_key_ids(
+    keys: &[(AccountId, SessionKeys)],
+    era: Option<u32>,
+    key_ids: &'static [KeyTypeId],
+) -> HistoricalRoot {
     (
         // Avoid a monolithic SCALE host-call buffer for large exposure histories.
-        LayoutV0::<BlakeTwo256>::trie_root(entries(keys, era)),
+        LayoutV0::<BlakeTwo256>::trie_root(entries(keys, era, key_ids)),
         if era.is_some() { keys.len() as u32 } else { 0 },
     )
 }
@@ -108,7 +117,11 @@ impl<D: AsRef<[u8]>> KeyOwnerProofSystem<(KeyTypeId, D)> for SessionKeyOwnerProo
         let session = Session::current_index();
         let (expected_root, validator_count) = Historical::historical_root(session)?;
         let keys = ActiveSessionKeys::get();
-        let entries = entries(&keys, Staking::active_era().map(|era| era.index));
+        let entries = entries(
+            &keys,
+            Staking::active_era().map(|era| era.index),
+            SessionKeys::key_ids(),
+        );
         let mut db = MemoryDB::<BlakeTwo256>::default();
         let mut root = Default::default();
         {

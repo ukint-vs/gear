@@ -42,6 +42,7 @@ struct RequestInfo<B: Block, AuthorityId: AuthorityIdBound> {
 enum State<B: Block, AuthorityId: AuthorityIdBound> {
     Idle,
     AwaitingResponse(PeerId, RequestInfo<B, AuthorityId>, ResponseReceiver),
+    WaitingForPeers(RequestInfo<B, AuthorityId>),
 }
 
 /// Possible engine responses.
@@ -60,6 +61,7 @@ pub struct OnDemandJustificationsEngine<B: Block, AuthorityId: AuthorityIdBound>
 
     live_peers: Arc<Mutex<KnownPeers<B>>>,
     peers_cache: VecDeque<PeerId>,
+    peers_revision: u64,
 
     state: State<B, AuthorityId>,
     metrics: Option<OnDemandOutgoingRequestsMetrics>,
@@ -78,13 +80,16 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
             protocol_name,
             live_peers,
             peers_cache: VecDeque::new(),
+            peers_revision: 0,
             state: State::Idle,
             metrics,
         }
     }
 
     fn reset_peers_cache_for_block(&mut self, block: NumberFor<B>) {
-        self.peers_cache = self.live_peers.lock().further_than(block);
+        let peers = self.live_peers.lock();
+        self.peers_cache = peers.further_than(block);
+        self.peers_revision = peers.progress_revision();
     }
 
     fn try_next_peer(&mut self) -> Option<PeerId> {
@@ -130,6 +135,14 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
         if matches!(self.state, State::AwaitingResponse(_, _, _)) {
             return;
         }
+        if let State::WaitingForPeers(req_info) = &self.state {
+            if req_info.block == block
+                && req_info.active_set == active_set
+                && self.live_peers.lock().progress_revision() == self.peers_revision
+            {
+                return;
+            }
+        }
         self.reset_peers_cache_for_block(block);
 
         // Start the requests engine - each unsuccessful received response will automatically
@@ -137,6 +150,7 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
         if let Some(peer) = self.try_next_peer() {
             self.request_from_peer(peer, RequestInfo { block, active_set });
         } else {
+            self.state = State::WaitingForPeers(RequestInfo { block, active_set });
             metric_inc!(
                 self.metrics,
                 beefy_on_demand_justification_no_peer_to_request_from
@@ -151,7 +165,9 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
     /// Cancel any pending request for block numbers smaller or equal to `block`.
     pub fn cancel_requests_older_than(&mut self, block: NumberFor<B>) {
         match &self.state {
-            State::AwaitingResponse(_, req_info, _) if req_info.block <= block => {
+            State::AwaitingResponse(_, req_info, _) | State::WaitingForPeers(req_info)
+                if req_info.block <= block =>
+            {
                 debug!(
                     target: BEEFY_SYNC_LOG_TARGET,
                     "🥩 cancel pending request for justification #{:?}", req_info.block
@@ -221,14 +237,30 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
     }
 
     pub(crate) async fn next(&mut self) -> ResponseInfo<B, AuthorityId> {
-        let (peer, req_info, resp) = match &mut self.state {
-            State::Idle => {
-                futures::future::pending::<()>().await;
-                return ResponseInfo::Pending;
-            }
-            State::AwaitingResponse(peer, req_info, receiver) => {
-                let resp = receiver.await;
-                (*peer, req_info.clone(), resp)
+        let (peer, req_info, resp) = loop {
+            match &mut self.state {
+                State::Idle => {
+                    futures::future::pending::<()>().await;
+                    return ResponseInfo::Pending;
+                }
+                State::WaitingForPeers(_) => {
+                    futures::future::poll_fn(|cx| {
+                        self.live_peers
+                            .lock()
+                            .poll_progress(cx, self.peers_revision)
+                    })
+                    .await;
+                    let State::WaitingForPeers(req_info) =
+                        std::mem::replace(&mut self.state, State::Idle)
+                    else {
+                        unreachable!("exclusive polling preserves the waiting request");
+                    };
+                    self.request(req_info.block, req_info.active_set);
+                }
+                State::AwaitingResponse(peer, req_info, receiver) => {
+                    let resp = receiver.await;
+                    break (*peer, req_info.clone(), resp);
+                }
             }
         };
         // We received the awaited response. Our 'receiver' will never generate any other response,
@@ -242,6 +274,7 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
                 if let Some(peer) = self.try_next_peer() {
                     self.request_from_peer(peer, req_info);
                 } else {
+                    self.state = State::WaitingForPeers(req_info);
                     metric_inc!(
                         self.metrics,
                         beefy_on_demand_justification_no_peer_to_request_from
@@ -274,5 +307,128 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
                 ResponseInfo::ValidProof(proof, peer_report)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{justification::tests::new_finality_proof, tests::make_beefy_ids};
+    use futures::{
+        channel::mpsc,
+        task::{waker, ArcWake},
+        FutureExt,
+    };
+    use sp_consensus_beefy::{ecdsa_crypto, test_utils::Keyring};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Poll},
+    };
+    use substrate_test_runtime_client::runtime::Block;
+
+    type PendingRequest = (PeerId, Vec<u8>, oneshot::Sender<Response>);
+
+    struct RequestNetwork(mpsc::UnboundedSender<PendingRequest>);
+
+    #[async_trait::async_trait]
+    impl NetworkRequest for RequestNetwork {
+        async fn request(
+            &self,
+            _: PeerId,
+            _: ProtocolName,
+            _: Vec<u8>,
+            _: Option<(Vec<u8>, ProtocolName)>,
+            _: IfDisconnected,
+        ) -> Response {
+            unimplemented!("the on-demand engine uses start_request")
+        }
+
+        fn start_request(
+            &self,
+            peer: PeerId,
+            _: ProtocolName,
+            request: Vec<u8>,
+            _: Option<(Vec<u8>, ProtocolName)>,
+            response: oneshot::Sender<Response>,
+            _: IfDisconnected,
+        ) {
+            self.0.unbounded_send((peer, request, response)).unwrap();
+        }
+    }
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl ArcWake for WakeCounter {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn peer_progress_hint_retries_mandatory_request_without_new_finality() {
+        let keys = [Keyring::<ecdsa_crypto::AuthorityId>::Alice];
+        let active_set = ValidatorSet::new(make_beefy_ids(&keys), 7).unwrap();
+        let known_peers = Arc::new(Mutex::new(KnownPeers::<Block>::new()));
+        let (requests_tx, mut requests_rx) = mpsc::unbounded();
+        let protocol: ProtocolName = "/beefy/justifs/1".into();
+        let mut engine = OnDemandJustificationsEngine::new(
+            Arc::new(RequestNetwork(requests_tx)),
+            protocol.clone(),
+            known_peers.clone(),
+            None,
+        );
+        let wakes = Arc::new(WakeCounter::default());
+        let task_waker = waker(wakes.clone());
+        let mut cx = Context::from_waker(&task_waker);
+        engine.request(5, active_set.clone());
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(requests_rx.try_next().is_err());
+
+        let peer = PeerId::random();
+        known_peers.lock().note_vote_for(peer, 5);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(requests_rx.try_next().is_err());
+        known_peers.lock().note_vote_for(peer, 20);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 2);
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        let (requested_peer, request, response) = requests_rx.try_next().unwrap().unwrap();
+        assert_eq!(requested_peer, peer);
+        assert_eq!(request, JustificationRequest::<Block> { begin: 5 }.encode());
+        response.send(Ok((vec![0xff], protocol.clone()))).unwrap();
+        assert!(matches!(
+            engine.next().boxed().as_mut().poll(&mut cx),
+            Poll::Ready(ResponseInfo::PeerReport(_))
+        ));
+
+        // Exhaustion retains the target; repeated hints and worker requests do not retry it.
+        engine.request(5, active_set.clone());
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        let before_duplicate = wakes.0.load(Ordering::Relaxed);
+        known_peers.lock().note_vote_for(peer, 20);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), before_duplicate);
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(requests_rx.try_next().is_err());
+
+        known_peers.lock().note_vote_for(peer, 21);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), before_duplicate + 1);
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        let (_, request, response) = requests_rx.try_next().unwrap().unwrap();
+        assert_eq!(request, JustificationRequest::<Block> { begin: 5 }.encode());
+        let proof = new_finality_proof(5, &active_set, &keys);
+        response.send(Ok((proof.encode(), protocol))).unwrap();
+        match engine.next().boxed().as_mut().poll(&mut cx) {
+            Poll::Ready(ResponseInfo::ValidProof(received, _)) => assert_eq!(received, proof),
+            _ => panic!("the retained historical validator set must verify the response"),
+        }
+
+        known_peers.lock().remove(&peer);
+        engine.request(10, active_set);
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        engine.cancel_requests_older_than(10);
+        known_peers.lock().note_vote_for(peer, 30);
+        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(requests_rx.try_next().is_err());
     }
 }

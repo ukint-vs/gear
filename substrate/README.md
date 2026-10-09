@@ -35,7 +35,9 @@ Local Cargo package names intentionally stay compatible with upstream package na
 
 The local BEEFY client backports [Polkadot SDK #12812](https://github.com/paritytech/polkadot-sdk/pull/12812) so malformed justification requests are rejected without terminating the handler, including a nonzero penalty for empty requests.
 
-Gear also carries raw-buffer gossip rebroadcast fixes and signed-proof/MMR regression coverage. Peer progress remains an untrusted discovery hint so lagging nodes can request historical proofs; returned proofs are verified against the requested round and authority set.
+The BEEFY pallet also backports [Polkadot SDK #11816](https://github.com/paritytech/polkadot-sdk/pull/11816), commit `71da30286be32e2368b4d948b5febd80c0b6a92d`: unsigned future-block voting reports convert to equivocation evidence before validation. Regression coverage exercises local/in-block acceptance, external rejection, dispatch and duplicate rejection.
+
+Gear also carries raw-buffer gossip rebroadcast fixes and signed-proof/MMR regression coverage. Peer progress remains an untrusted discovery hint; returned proofs are verified against the requested round and authority set. Advancing hints wake retained historical-proof requests without an unrelated finality event. Buffered mandatory proofs drain across successive sessions while progress is possible. Cached-round proofs receive no reputation reward because their signatures are not rechecked.
 
 Restart initialization reads the current finalized state before waiting for another finality notification. Recovery replays the exact persisted mandatory vote without re-signing, stops header catch-up at BEEFY genesis, and restores the finalized RPC head. These changes do not alter the persisted SCALE schema. The remaining SDK stays pinned to the source reference above.
 

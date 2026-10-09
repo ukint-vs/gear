@@ -474,6 +474,13 @@ pub mod pallet {
                     *equivocation_proof.clone(),
                     key_owner_proof.clone(),
                 )),
+                Call::report_future_block_voting_unsigned {
+                    equivocation_proof,
+                    key_owner_proof,
+                } => Some(EquivocationEvidenceFor::<T>::FutureBlockVotingProof(
+                    *equivocation_proof.clone(),
+                    key_owner_proof.clone(),
+                )),
                 _ => None,
             }
         }

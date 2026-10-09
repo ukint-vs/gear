@@ -1208,10 +1208,7 @@ async fn on_demand_beefy_justification_sync() {
         .await;
     finalize_block_and_wait_for_beefy(&net, &validator_set, fast_peers, &hashes[29], &[29]).await;
 
-    // Kick Dave's async loop by finalizing another block.
-    client.finalize_block(hashes[2], None).unwrap();
-
-    // And verify Dave successfully finalized #1 (through on-demand justification request).
+    // Peer progress alone must wake Dave and fetch #1, without another finality notification.
     wait_for_best_beefy_blocks(dave_best_blocks, &net, &[1]).await;
 
     // Give all tasks some cpu cycles to burn through their events queues,

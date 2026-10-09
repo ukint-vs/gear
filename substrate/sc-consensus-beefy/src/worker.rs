@@ -688,10 +688,9 @@ where
 
     /// Handle previously buffered justifications, that now land in the voting interval.
     fn try_pending_justifications(&mut self) -> Result<(), Error> {
-        // Interval of blocks for which we can process justifications and votes right now.
-        let (start, end) = self.voting_oracle().accepted_interval()?;
-        // Process pending justifications.
-        if !self.pending_justifications.is_empty() {
+        while !self.pending_justifications.is_empty() {
+            let best_before = self.persisted_state.best_beefy();
+            let (start, end) = self.voting_oracle().accepted_interval()?;
             // These are still pending.
             let still_pending = self
                 .pending_justifications
@@ -713,6 +712,9 @@ where
                 beefy_buffered_justifications,
                 self.pending_justifications.len()
             );
+            if self.persisted_state.best_beefy() == best_before {
+                break;
+            }
         }
         Ok(())
     }
@@ -1229,6 +1231,68 @@ pub(crate) mod tests {
             persisted_state,
             is_authority: true,
         }
+    }
+
+    #[tokio::test]
+    async fn drains_buffered_mandatory_proofs_across_sessions_without_new_events() {
+        let keys = [Keyring::<ecdsa_crypto::AuthorityId>::Alice];
+        let sets: Vec<_> = (0..4)
+            .map(|id| ValidatorSet::new(make_beefy_ids(&keys), id).unwrap())
+            .collect();
+        let mut net = BeefyTestNet::new(1);
+        let mut worker = create_beefy_worker(net.peer(0), &keys[0], 1, sets[0].clone());
+        let hashes = net.peer(0).push_blocks(20, false);
+        let client = net.peer(0).client().as_client();
+        let head = *hashes.last().unwrap();
+        client.finalize_block(head, None).unwrap();
+        worker.persisted_state = PersistedState::checked_new(
+            client.expect_header(head).unwrap(),
+            0,
+            [1, 10, 20]
+                .into_iter()
+                .zip(sets.iter())
+                .map(|(number, set)| Rounds::new(number, set.clone()))
+                .collect(),
+            1,
+            1,
+        )
+        .unwrap();
+        worker.key_store = Arc::new(None.into());
+        let mut proofs = get_beefy_streams(&mut net, std::iter::once((0, keys[0].clone())))
+            .1
+            .pop()
+            .unwrap();
+        // Later mandatory proofs can arrive before the missing first one.
+        for (number, set) in [(20, &sets[2]), (10, &sets[1]), (30, &sets[3])] {
+            let proof = crate::justification::tests::new_finality_proof(number, set, &keys);
+            crate::justification::verify_with_validator_set::<Block, ecdsa_crypto::AuthorityId>(
+                number, set, &proof,
+            )
+            .unwrap();
+            worker.triage_incoming_justif(proof).unwrap();
+        }
+        let first = crate::justification::tests::new_finality_proof(1, &sets[0], &keys);
+        worker.triage_incoming_justif(first).unwrap();
+        worker.process_new_state();
+        assert_eq!(worker.persisted_state.best_beefy(), 20);
+        assert_eq!(worker.voting_oracle().sessions.len(), 1);
+        assert!(worker.active_rounds().unwrap().mandatory_done());
+        assert_eq!(
+            worker
+                .pending_justifications
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![30]
+        );
+        for expected in [1, 10, 20] {
+            let VersionedFinalityProof::V1(proof) = proofs.next().now_or_never().unwrap().unwrap();
+            assert_eq!(proof.commitment.block_number, expected);
+        }
+        worker.process_new_state();
+        assert_eq!(worker.persisted_state.best_beefy(), 20);
+        assert_eq!(worker.pending_justifications.len(), 1);
+        assert!(proofs.next().now_or_never().is_none());
     }
 
     #[tokio::test]

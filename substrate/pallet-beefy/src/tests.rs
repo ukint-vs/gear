@@ -1200,6 +1200,90 @@ fn valid_future_block_voting_reports_dont_pay_fees() {
 }
 
 #[test]
+fn report_future_block_voting_validate_unsigned_prevents_duplicates() {
+    use sp_runtime::transaction_validity::{
+        InvalidTransaction, TransactionPriority, TransactionSource, TransactionValidity,
+        ValidTransaction,
+    };
+
+    ExtBuilder::default()
+        .add_authorities(test_authorities())
+        .build_and_execute(|| {
+            start_era(1);
+
+            let future_block = System::block_number() + 100;
+            let validator_set = Beefy::validator_set().unwrap();
+            let equivocation_key = &validator_set.validators()[0];
+            let set_id = validator_set.id();
+            let equivocation_keyring = BeefyKeyring::from_public(equivocation_key).unwrap();
+            let payload = Payload::from_single_entry(MMR_ROOT_ID, vec![42]);
+            let equivocation_proof = generate_future_block_voting_proof((
+                future_block,
+                payload,
+                set_id,
+                &equivocation_keyring,
+            ));
+            let key_owner_proof = Historical::prove((BEEFY_KEY_TYPE, &equivocation_key)).unwrap();
+            let call = Call::report_future_block_voting_unsigned {
+                equivocation_proof: Box::new(equivocation_proof.clone()),
+                key_owner_proof: key_owner_proof.clone(),
+            };
+
+            assert_eq!(
+                <Beefy as sp_runtime::traits::ValidateUnsigned>::validate_unsigned(
+                    TransactionSource::External,
+                    &call,
+                ),
+                InvalidTransaction::Call.into(),
+            );
+
+            let tx_tag = (equivocation_key, set_id, future_block);
+            for source in [TransactionSource::Local, TransactionSource::InBlock] {
+                assert_eq!(
+                    <Beefy as sp_runtime::traits::ValidateUnsigned>::validate_unsigned(
+                        source, &call
+                    ),
+                    TransactionValidity::Ok(ValidTransaction {
+                        priority: TransactionPriority::MAX,
+                        requires: vec![],
+                        provides: vec![("BeefyEquivocation", tx_tag).encode()],
+                        longevity: ReportLongevity::get(),
+                        propagate: false,
+                    }),
+                );
+            }
+            assert_ok!(<Beefy as sp_runtime::traits::ValidateUnsigned>::pre_dispatch(&call));
+
+            assert_ok!(Beefy::report_future_block_voting_unsigned(
+                RuntimeOrigin::none(),
+                Box::new(equivocation_proof.clone()),
+                key_owner_proof.clone(),
+            ));
+
+            for source in [TransactionSource::Local, TransactionSource::InBlock] {
+                assert_err!(
+                    <Beefy as sp_runtime::traits::ValidateUnsigned>::validate_unsigned(
+                        source, &call
+                    ),
+                    InvalidTransaction::Stale,
+                );
+            }
+            assert_err!(
+                <Beefy as sp_runtime::traits::ValidateUnsigned>::pre_dispatch(&call),
+                InvalidTransaction::Stale,
+            );
+            assert_err!(
+                Beefy::report_future_block_voting_unsigned(
+                    RuntimeOrigin::none(),
+                    Box::new(equivocation_proof),
+                    key_owner_proof,
+                ),
+                Error::<Test>::DuplicateOffenceReport,
+            );
+        });
+}
+
+#[test]
 fn set_new_genesis_works() {
     let authorities = test_authorities();
 

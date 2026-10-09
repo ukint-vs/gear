@@ -373,7 +373,6 @@ mod tests {
     fn initialized_commitment_matches_wire_fixture() {
         let [
             source_genesis,
-            source_domain,
             destination_chain_id,
             destination_queue,
             bridge_domain,
@@ -385,20 +384,17 @@ mod tests {
             commitment,
             uninitialized_preimage,
             uninitialized_commitment,
-        ]: [String; 13] =
+        ]: [String; 12] =
             serde_json_wasm::from_str(include_str!("../tests/fixtures/bridge_commitment.json"))
                 .expect("fixture is valid JSON");
 
         let source_genesis =
-            sp_core::H256::from_str(&source_genesis).expect("raw source genesis is valid hex");
-        let source_domain =
-            sp_core::H256::from_str(&source_domain).expect("source domain is valid hex");
-        let destination_chain_id = sp_core::H256::from_str(&destination_chain_id)
+            H256::from_str(&source_genesis).expect("raw source genesis is valid hex");
+        let destination_chain_id = H256::from_str(&destination_chain_id)
             .expect("destination chain id is 32-byte big-endian hex");
         let destination_queue =
-            sp_core::H160::from_str(&destination_queue).expect("destination queue is valid hex");
-        let bridge_domain =
-            sp_core::H256::from_str(&bridge_domain).expect("bridge domain is valid hex");
+            H160::from_str(&destination_queue).expect("destination queue is valid hex");
+        let bridge_domain = H256::from_str(&bridge_domain).expect("bridge domain is valid hex");
         let source_timestamp_ms = timestamp.parse().expect("timestamp is valid decimal");
         let initialized: u8 = initialized.parse().expect("initialized is valid decimal");
         let queue_id = u64::from_str_radix(
@@ -406,38 +402,55 @@ mod tests {
             16,
         )
         .expect("queue id is valid hex");
-        let root = sp_core::H256::from_str(&root).expect("root is valid hex");
+        let root = H256::from_str(&root).expect("root is valid hex");
         let preimage = sp_core::Bytes::from_str(&preimage).expect("preimage is valid hex");
-        let commitment = sp_core::H256::from_str(&commitment).expect("commitment is valid hex");
+        let commitment = H256::from_str(&commitment).expect("commitment is valid hex");
         let uninitialized_preimage = sp_core::Bytes::from_str(&uninitialized_preimage)
             .expect("uninitialized preimage is valid hex");
-        let uninitialized_commitment = sp_core::H256::from_str(&uninitialized_commitment)
+        let uninitialized_commitment = H256::from_str(&uninitialized_commitment)
             .expect("uninitialized commitment is valid hex");
 
-        assert_ne!(source_genesis, source_domain);
         assert_ne!(source_genesis, bridge_domain);
         assert_eq!(initialized, 1);
         assert_eq!(
-            Keccak256::hash(
-                &[
-                    &b"vara/gear-eth-bridge-domain/v2"[..],
-                    source_domain.as_bytes(),
-                    destination_chain_id.as_bytes(),
-                    destination_queue.as_bytes(),
-                ]
-                .concat()
+            GearEthBridge::destination_domain(
+                source_genesis,
+                destination_chain_id,
+                destination_queue
             ),
             bridge_domain,
         );
-
         let encoded = encode_snapshot(bridge_domain, source_timestamp_ms, Some((queue_id, root)));
-        assert_eq!(encoded.len(), 86);
         assert_eq!(encoded.as_slice(), &preimage[..]);
         assert_eq!(Keccak256::hash(&encoded), commitment);
-
         let uninitialized = encode_snapshot(bridge_domain, source_timestamp_ms, None);
         assert_eq!(uninitialized.as_slice(), &uninitialized_preimage[..]);
         assert_eq!(Keccak256::hash(&uninitialized), uninitialized_commitment);
+
+        sp_io::TestExternalities::default().execute_with(|| {
+            frame_system::BlockHash::<Runtime>::insert(0, source_genesis);
+            pallet_timestamp::Now::<Runtime>::put(source_timestamp_ms);
+            assert_ok!(GearEthBridge::bind_destination(
+                crate::RuntimeOrigin::root(),
+                destination_chain_id,
+                destination_queue,
+            ));
+            assert_eq!(GearEthBridge::bridge_domain(), bridge_domain);
+            assert_eq!(VaraBridgeProvider::extra_data(), uninitialized_commitment.0);
+
+            for (name, value) in [
+                (b"Initialized".as_slice(), true.encode()),
+                (b"QueueId", queue_id.encode()),
+                (b"QueueMerkleRoot", root.encode()),
+            ] {
+                sp_io::storage::set(
+                    &frame_support::storage::storage_prefix(b"GearEthBridge", name),
+                    &value,
+                );
+            }
+            assert_eq!(GearEthBridge::bridge_snapshot(), Some((queue_id, root)));
+            assert_eq!(VaraBridgeProvider::extra_data(), commitment.0);
+        });
     }
 
     #[test]

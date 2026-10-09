@@ -328,7 +328,8 @@ where
             }
 
             if guard.is_already_proven(round) {
-                return Action::Discard(benefit::NOT_INTERESTED);
+                // The cached round does not authenticate this proof.
+                return Action::DiscardNoReport;
             }
 
             // Verify justification signatures.
@@ -804,6 +805,13 @@ pub(crate) mod tests {
         assert!(matches!(res, ValidationResult::ProcessAndKeep(_)));
         expected_report.cost_benefit = benefit::VALIDATED_PROOF;
         assert_eq!(report_stream.try_next().unwrap().unwrap(), expected_report);
+        assert_eq!(context.broadcast.take(), Some(encoded_proof.clone()));
+
+        // Repeated proofs are discarded without a reputation change or forwarding.
+        let res = gv.validate(&mut context, &sender, &encoded_proof);
+        assert!(matches!(res, ValidationResult::Discard));
+        assert!(report_stream.try_next().is_err());
+        assert!(context.broadcast.is_none());
 
         // accept future proof with good set_id
         let proof = dummy_proof(20, &validator_set);
@@ -836,6 +844,74 @@ pub(crate) mod tests {
         expected_report.cost_benefit.value += cost::PER_SIGNATURE_CHECKED;
         assert_eq!(report_stream.try_next().unwrap().unwrap(), expected_report);
         assert!(known_peers.lock().further_than(20).contains(&sender));
+    }
+
+    #[test]
+    fn cached_round_does_not_reward_or_forward_corrupted_proofs() {
+        let validator_set = ValidatorSet::new(
+            vec![Keyring::<ecdsa_crypto::AuthorityId>::Alice.public()],
+            0,
+        )
+        .unwrap();
+        let (network, mut report_stream) = TestNetwork::new();
+        let gv = GossipValidator::<Block, _, ecdsa_crypto::AuthorityId>::new(
+            Arc::new(Mutex::new(KnownPeers::new())),
+            Arc::new(network),
+        );
+        gv.update_filter(GossipFilterCfg {
+            start: 0,
+            end: 10,
+            validator_set: &validator_set,
+        });
+        let sender = PeerId::random();
+        let mut context = TestContext::default();
+        let proof = dummy_proof(7, &validator_set);
+        let encoded =
+            GossipMessage::<Block, ecdsa_crypto::AuthorityId>::FinalityProof(proof.clone())
+                .encode();
+
+        assert!(matches!(
+            gv.validate(&mut context, &sender, &encoded),
+            ValidationResult::ProcessAndKeep(topic) if topic == proofs_topic::<Block>()
+        ));
+        assert_eq!(context.broadcast.take(), Some(encoded.clone()));
+        assert_eq!(
+            report_stream.try_next().unwrap().unwrap(),
+            PeerReport {
+                who: sender,
+                cost_benefit: benefit::VALIDATED_PROOF,
+            }
+        );
+        assert!(gv.gossip_filter.read().is_already_proven(7));
+
+        let mut previous = encoded;
+        for signer in [Keyring::Bob, Keyring::Charlie] {
+            let mut corrupted = proof.clone();
+            match &mut corrupted {
+                BeefyVersionedFinalityProof::<Block, ecdsa_crypto::AuthorityId>::V1(signed) => {
+                    signed.signatures = vec![Some(sign_commitment(&signer, &signed.commitment))];
+                }
+            }
+            assert!(
+                verify_with_validator_set::<Block, ecdsa_crypto::AuthorityId>(
+                    7,
+                    &validator_set,
+                    &corrupted,
+                )
+                .is_err()
+            );
+            let encoded =
+                GossipMessage::<Block, ecdsa_crypto::AuthorityId>::FinalityProof(corrupted)
+                    .encode();
+            assert_ne!(encoded, previous);
+            assert!(matches!(
+                gv.validate(&mut context, &sender, &encoded),
+                ValidationResult::Discard
+            ));
+            assert!(report_stream.try_next().is_err());
+            assert!(context.broadcast.is_none());
+            previous = encoded;
+        }
     }
 
     #[test]
@@ -952,6 +1028,8 @@ pub(crate) mod tests {
                 (historical_proof.clone(), true),
             ];
             for (proof, valid) in responses {
+                // Test each response independently of a retained exhausted request.
+                engine.cancel_requests_older_than(mandatory_block);
                 engine.request(mandatory_block, historical_set.clone());
                 let (peer, encoded_request, response) = requests_rx
                     .try_next()
