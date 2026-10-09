@@ -295,7 +295,6 @@ where
         let chain_spec = config.chain_spec.cloned_box();
 
         let rpc_backend = backend.clone();
-        let beefy_rpc_links = beefy_rpc_links.clone();
         let rpc_extensions_builder =
             move |subscription_executor: sc_rpc::SubscriptionTaskExecutor| {
                 let gear_subscription_executor = subscription_executor.clone();

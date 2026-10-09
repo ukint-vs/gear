@@ -345,12 +345,9 @@ impl ExtBuilder {
         let mut storage = system::GenesisConfig::<Test>::default()
             .build_storage()
             .unwrap();
-        crate::GenesisConfig::<Test> {
-            bridge_domain: gprimitives::H256::zero(),
-            _config: Default::default(),
-        }
-        .assimilate_storage(&mut storage)
-        .unwrap();
+        crate::GenesisConfig::<Test>::default()
+            .assimilate_storage(&mut storage)
+            .unwrap();
 
         pallet_balances::GenesisConfig::<Test> {
             balances: self

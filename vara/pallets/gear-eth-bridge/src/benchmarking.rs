@@ -95,7 +95,7 @@ benchmarks! {
             hash[28..].copy_from_slice(&i.to_be_bytes());
             H256::from(hash)
         }).collect::<sp_std::vec::Vec<_>>();
-        let expected = binary_merkle_tree::merkle_root_raw::<sp_runtime::traits::Keccak256, _>(queue.clone());
+        let expected = binary_merkle_tree::merkle_root_raw::<sp_runtime::traits::Keccak256, _>(queue.iter().copied());
         crate::Queue::<T>::put(queue);
         crate::QueueChanged::<T>::put(true);
     }: {

@@ -162,17 +162,8 @@ impl ExtBuilder {
                 .initial_authorities
                 .iter()
                 .map(|x| {
-                    (
-                        x.0.clone(),
-                        x.0.clone(),
-                        SessionKeys {
-                            babe: x.2.into(),
-                            grandpa: x.3.into(),
-                            im_online: x.4.into(),
-                            authority_discovery: x.5.into(),
-                            beefy: x.6.into(),
-                        },
-                    )
+                    let (owner, keys) = session_validator(x);
+                    (owner.clone(), owner, keys)
                 })
                 .collect(),
             ..Default::default()

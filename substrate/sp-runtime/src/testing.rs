@@ -137,14 +137,12 @@ impl sp_application_crypto::RuntimeAppPublic for UintAuthorityId {
     }
 
     fn generate_proof_of_possession(&mut self, owner: &[u8]) -> Option<Self::ProofOfPossession> {
-        let mut statement = b"POP_".to_vec();
-        statement.extend_from_slice(owner);
+        let statement = [b"POP_".as_slice(), owner].concat();
         Some(TestSignature(self.0, statement))
     }
 
     fn verify_proof_of_possession(&self, owner: &[u8], proof: &Self::ProofOfPossession) -> bool {
-        let mut statement = b"POP_".to_vec();
-        statement.extend_from_slice(owner);
+        let statement = [b"POP_".as_slice(), owner].concat();
         traits::Verify::verify(proof, statement.as_slice(), &self.0)
     }
 

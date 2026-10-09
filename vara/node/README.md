@@ -213,16 +213,8 @@ The exact migration is **11000 → 20100**, preserving `vara` / `vara-testnet` i
 
 After finalized enactment, check code/checksum, metadata and `state_getRuntimeVersion(finalizedHash)` for spec 20100 and SessionKeys API **2**, ID **`0xab3c0572291feb8b`** (pinned SDK Blake2b-64 hash of `SessionKeys`). Use the runbook's curl examples and approved metadata-aware queries to read `Staking.Bonded(stash)` and resolve the effective signed owner: controller where applicable or represented proxy/multisig account, not the outer fee payer.
 
-Generate on the released node using the actual effective signer's **raw 32-byte AccountId32 hex**, not SS58 text or a length-prefixed SCALE Vec:
-
-~~~bash
-set -euo pipefail
-: "${OWNER:?Set the actual raw AccountId32 hex of the effective signer}"
-[[ "$OWNER" =~ ^0x[[:xdigit:]]{64}$ ]] || exit 1
-curl --fail --silent --show-error -H 'Content-Type: application/json' \
-  --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"author_rotateKeysWithOwner\",\"params\":[\"$OWNER\"]}" \
-  http://127.0.0.1:9944
-~~~
+Generate on the released local node using the runbook's [native-generation example](../../beefy-deployment.md#4-validators-native-generation-and-ordinary-registration).
+Set `OWNER` to the actual effective signer's **raw 32-byte AccountId32 hex**, not SS58 text or a length-prefixed SCALE Vec.
 
 Use your service's actual local RPC port. Require `result.keys` **161 bytes** in BABE/GRANDPA/ImOnline/AuthorityDiscovery/BEEFY order and nonempty `result.proof` **321 bytes**, the native five-signature tuple. Every key signs `POP_ || owner`; ECDSA possession uses normal Blake2-based signatures, not prehashed BEEFY commitment signatures, and rejects noncanonical high-S. This protocol is owner-bound, not genesis-/whole-bundle-bound. Never use `author_rotateKeys` with empty proof, manually concatenate keys or export session secrets.
 

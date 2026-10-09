@@ -1674,22 +1674,11 @@ async fn should_catch_up_when_loading_saved_voter_state() {
 #[tokio::test]
 async fn restart_preserves_changed_keys_and_mandatory_set_order() {
     let sets = [
-        ValidatorSet::new(
-            make_beefy_ids(&[BeefyKeyring::Bob, BeefyKeyring::Alice]),
-            10,
-        )
-        .unwrap(),
-        ValidatorSet::new(
-            make_beefy_ids(&[BeefyKeyring::Charlie, BeefyKeyring::Alice]),
-            11,
-        )
-        .unwrap(),
-        ValidatorSet::new(
-            make_beefy_ids(&[BeefyKeyring::Alice, BeefyKeyring::Charlie]),
-            12,
-        )
-        .unwrap(),
-    ];
+        ([BeefyKeyring::Bob, BeefyKeyring::Alice], 10),
+        ([BeefyKeyring::Charlie, BeefyKeyring::Alice], 11),
+        ([BeefyKeyring::Alice, BeefyKeyring::Charlie], 12),
+    ]
+    .map(|(keys, id)| ValidatorSet::new(make_beefy_ids(&keys), id).unwrap());
     let mut net = BeefyTestNet::new(1);
     let mut number = 0;
     let hashes = net

@@ -478,7 +478,7 @@ pub mod pallet {
                     equivocation_proof,
                     key_owner_proof,
                 } => Some(EquivocationEvidenceFor::<T>::FutureBlockVotingProof(
-                    *equivocation_proof.clone(),
+                    equivocation_proof.as_ref().clone(),
                     key_owner_proof.clone(),
                 )),
                 _ => None,

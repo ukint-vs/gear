@@ -42,9 +42,7 @@ fn initialize_block(block: u64) {
 
 fn ownership_proof(owner: u64, key: u64) -> Vec<u8> {
     let mut keys = mock::MockSessionKeys::from(UintAuthorityId(key));
-    keys.create_ownership_proof(&owner.encode())
-        .unwrap()
-        .encode()
+    owner.using_encoded(|owner| keys.create_ownership_proof(owner).unwrap().encode())
 }
 
 #[test]

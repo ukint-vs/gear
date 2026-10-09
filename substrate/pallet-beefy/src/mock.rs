@@ -143,9 +143,6 @@ impl<Header: HeaderT> AncestryHelperWeightInfo<Header> for MockAncestryHelper {
 }
 
 impl pallet_beefy::Config for Test {
-    type NewGenesisOrigin =
-        frame_support::traits::AsEnsureOriginWithArg<frame_system::EnsureRoot<u64>>;
-    type NewGenesisValidationWeight = ();
     type BeefyId = BeefyId;
     type MaxAuthorities = ConstU32<100>;
     type MaxNominators = ConstU32<1000>;

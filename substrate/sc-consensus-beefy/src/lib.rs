@@ -296,10 +296,7 @@ where
     ) -> Result<Self, Error> {
         // The stream is already subscribed: inspect finalized state before waiting for new events.
         let finalized_hash = backend.blockchain().info().finalized_hash;
-        let best_grandpa = backend
-            .blockchain()
-            .expect_header(finalized_hash)
-            .map_err(|err| Error::Backend(err.to_string()))?;
+        let best_grandpa = backend.blockchain().expect_header(finalized_hash)?;
         let (beefy_genesis, best_grandpa) =
             wait_for_runtime_pallet(&*runtime, best_grandpa, finality_notifications).await?;
 

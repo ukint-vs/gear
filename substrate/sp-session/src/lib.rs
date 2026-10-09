@@ -122,7 +122,7 @@ where
     runtime_api.register_extension(sp_keystore::KeystoreExt::from(keystore));
 
     for seed in seeds {
-        let seed = Some(seed.as_bytes().to_vec());
+        let seed = Some(seed.into_bytes());
 
         if version < 2 {
             #[allow(deprecated)]

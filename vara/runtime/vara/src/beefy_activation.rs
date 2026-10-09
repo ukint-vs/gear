@@ -134,7 +134,7 @@ mod tests {
         traits::{Hooks, UnfilteredDispatchable},
     };
     use parity_scale_codec::Encode;
-    use sp_core::{H160, H256, Pair, ed25519, sr25519};
+    use sp_core::{H160, H256, Pair, U256, ed25519, sr25519};
     use sp_runtime::{
         BuildStorage, DispatchError,
         traits::{Hash, Keccak256, OpaqueKeys},
@@ -476,18 +476,14 @@ mod tests {
                 pallet_session::Error::<Runtime>::InvalidProof
             );
             // Produce the malleable counterpart of the native low-S ECDSA signature.
-            let order: [u8; 32] = [
+            let order = U256::from_big_endian(&[
                 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                 0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
                 0xd0, 0x36, 0x41, 0x41,
-            ];
+            ]);
             let mut high_s = proof.clone();
-            let mut borrow = 0i16;
-            for index in (0..32).rev() {
-                let difference = i16::from(order[index]) - i16::from(proof[288 + index]) - borrow;
-                high_s[288 + index] = difference as u8;
-                borrow = i16::from(difference < 0);
-            }
+            let s = U256::from_big_endian(&high_s[288..320]);
+            (order - s).to_big_endian(&mut high_s[288..320]);
             high_s[320] ^= 1;
             assert_noop!(
                 Session::set_keys(RuntimeOrigin::signed(account.clone()), keys.clone(), high_s),

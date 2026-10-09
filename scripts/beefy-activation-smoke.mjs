@@ -252,9 +252,7 @@ async function checkMmr(commitment, domain) {
     initialized ? root.unwrap().toU8a() : new Uint8Array(32));
   assert.equal(snapshot.length, 86);
   assert.equal(u8aToHex(leaf.subarray(81)), u8aToHex(keccakAsU8a(snapshot, 256)), 'Signed MMR leaf has wrong bridge snapshot/domain');
-  const evidence = { block: commitment.block, blockHash: commitment.blockHash, root: commitment.mmrRoot, bridgeDomain: domain, leaf: u8aToHex(leaf), leaves: generated.leaves.toHex(), proof: generated.proof.toHex() };
-  mmrProofs.push(evidence);
-  return evidence;
+  mmrProofs.push({ block: commitment.block, blockHash: commitment.blockHash, root: commitment.mmrRoot, bridgeDomain: domain, leaf: u8aToHex(leaf), leaves: generated.leaves.toHex(), proof: generated.proof.toHex() });
 }
 
 async function waitCommitment(label, keys, beyond = -1) {
@@ -281,7 +279,6 @@ async function bridgeSend(payload, expectedError) {
     assert.equal((await after.query.gearEthBridge.queue()).toHex(), reset ? api.registry.createType('Vec<H256>', []).toHex() : (await before.query.gearEthBridge.queue()).toHex());
     assert.equal((await after.query.gearEthBridge.queueMerkleRoot()).toHex(), reset ? api.registry.createType('Option<H256>', '0x' + '00'.repeat(32)).toHex() : (await before.query.gearEthBridge.queueMerkleRoot()).toHex());
   }
-  return result.status.asFinalized;
 }
 
 try {

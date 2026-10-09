@@ -247,24 +247,6 @@ mod malformed_request_tests {
     use sc_network_test::TestClientBuilderExt;
     use substrate_test_runtime_client::{DefaultTestClientBuilderExt, TestClientBuilder};
 
-    fn test_handler() -> (
-        async_channel::Sender<netconfig::IncomingRequest>,
-        BeefyJustifsRequestHandler<
-            substrate_test_runtime_client::runtime::Block,
-            substrate_test_runtime_client::TestClient,
-        >,
-    ) {
-        let (tx, rx) = async_channel::bounded(JUSTIF_CHANNEL_SIZE);
-        let handler = BeefyJustifsRequestHandler {
-            request_receiver: IncomingRequestReceiver::new(rx),
-            justif_protocol_name: ProtocolName::Static("/beefy/justifications/1"),
-            client: Arc::new(TestClientBuilder::new().build()),
-            metrics: None,
-            _block: PhantomData,
-        };
-        (tx, handler)
-    }
-
     async fn send_request(
         tx: &async_channel::Sender<netconfig::IncomingRequest>,
         payload: Vec<u8>,
@@ -282,7 +264,14 @@ mod malformed_request_tests {
 
     #[tokio::test]
     async fn malformed_requests_do_not_stop_handler() {
-        let (tx, mut handler) = test_handler();
+        let (tx, rx) = async_channel::bounded(JUSTIF_CHANNEL_SIZE);
+        let mut handler = BeefyJustifsRequestHandler {
+            request_receiver: IncomingRequestReceiver::new(rx),
+            justif_protocol_name: ProtocolName::Static("/beefy/justifications/1"),
+            client: Arc::new(TestClientBuilder::new().build()),
+            metrics: None,
+            _block: PhantomData::<substrate_test_runtime_client::runtime::Block>,
+        };
         let handler_task = tokio::spawn(async move { handler.run().await });
 
         for payload in [vec![], vec![0xff]] {

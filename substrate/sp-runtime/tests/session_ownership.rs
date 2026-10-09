@@ -71,7 +71,7 @@ fn five_field_tuple_has_native_wire_contract_and_verifies_every_field() {
         assert_eq!(proof.len(), 321);
         assert!(keys.ownership_proof_is_valid(&owner, &proof));
         assert!(!keys.ownership_proof_is_valid(&[43; 32], &proof));
-        assert!(!keys.ownership_proof_is_valid(&owner.to_vec().encode(), &proof));
+        assert!(!keys.ownership_proof_is_valid(&owner.as_slice().encode(), &proof));
         assert!(!keys.ownership_proof_is_valid(b"SS58 owner text", &proof));
 
         // Verify the wire tuple independently of the OpaqueKeys verifier.
@@ -120,10 +120,8 @@ fn five_field_tuple_has_native_wire_contract_and_verifies_every_field() {
 
         // Swapping bytes between independently generated sr25519 application keys must fail.
         let mut swapped = proof.clone();
-        let first = swapped[..64].to_vec();
-        let third = swapped[128..192].to_vec();
-        swapped[..64].copy_from_slice(&third);
-        swapped[128..192].copy_from_slice(&first);
+        let (first, rest) = swapped.split_at_mut(128);
+        first[..64].swap_with_slice(&mut rest[..64]);
         assert!(!keys.ownership_proof_is_valid(&owner, &swapped));
 
         let replacement = SessionKeys::generate(&owner, None);
@@ -175,12 +173,9 @@ fn single_field_proof_is_a_tuple_and_mock_proofs_bind_the_owner() {
             .keys
             .ownership_proof_is_valid(&owner, &generated.proof.encode()));
         let generated = MockKeys::generate(&owner, None);
-        assert!(generated
-            .keys
-            .ownership_proof_is_valid(&owner, &generated.proof.encode()));
-        assert!(!generated
-            .keys
-            .ownership_proof_is_valid(&[43; 32], &generated.proof.encode()));
+        let proof = generated.proof.encode();
+        assert!(generated.keys.ownership_proof_is_valid(&owner, &proof));
+        assert!(!generated.keys.ownership_proof_is_valid(&[43; 32], &proof));
         let mut key = generated.keys.key;
         let proof = key.generate_proof_of_possession(&owner).unwrap().encode();
         assert!(key.ownership_proof_is_valid(&owner, &proof));

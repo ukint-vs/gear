@@ -537,12 +537,12 @@ async fn author_owner_rotation_uses_persistent_custom_keystore_password() {
         generated
     };
     let mut keys = verify_native_proof(&generated.keys, generated.proof.as_ref().unwrap(), &owner);
+    let message = [b"POP_".as_slice(), &owner].concat();
     for password in [Some("test-password"), Some("wrong-password"), None] {
         let store: KeystorePtr = Arc::new(
             sc_keystore::LocalKeystore::open(&custom_path, password.map(|p| p.to_owned().into()))
                 .unwrap(),
         );
-        let message = [b"POP_".as_slice(), &owner].concat();
         let signatures = (
             store.ed25519_sign(ED25519, keys.ed25519.as_ref(), &message),
             store.sr25519_sign(SR25519, keys.sr25519.as_ref(), &message),

@@ -82,7 +82,7 @@ where
             .map_err(|api_err| Error::Client(Box::new(api_err)))?
             .ok_or_else(|| Error::MissingSessionKeysApi)?;
 
-        if version < 2 {
+        let generated = if version < 2 {
             #[allow(deprecated)]
             runtime_api
                 .generate_session_keys_before_version_2(best_block_hash, None)
@@ -90,7 +90,6 @@ where
                     keys: sk.into(),
                     proof: None,
                 })
-                .map_err(|api_err| Error::Client(Box::new(api_err)).into())
         } else {
             runtime_api
                 .generate_session_keys(best_block_hash, owner, None)
@@ -98,8 +97,8 @@ where
                     keys: sk.keys.into(),
                     proof: Some(sk.proof.into()),
                 })
-                .map_err(|api_err| Error::Client(Box::new(api_err)).into())
-        }
+        };
+        generated.map_err(|api_err| Error::Client(Box::new(api_err)))
     }
 }
 

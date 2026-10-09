@@ -62,13 +62,13 @@ pub fn testnet_genesis(
                     (
                         x.0.clone(),
                         x.0.clone(),
-                        session_keys(
-                            x.2.clone(),
-                            x.3.clone(),
-                            x.4.clone(),
-                            x.5.clone(),
-                            x.6.clone(),
-                        ),
+                        SessionKeys {
+                            babe: x.2.clone(),
+                            grandpa: x.3.clone(),
+                            im_online: x.4.clone(),
+                            authority_discovery: x.5.clone(),
+                            beefy: x.6.clone(),
+                        },
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -130,23 +130,6 @@ pub fn testnet_genesis(
         },
         gear_eth_bridge: Default::default(),
         ..Default::default()
-    }
-}
-
-/// Helper function that wraps a set of session keys.
-fn session_keys(
-    babe: BabeId,
-    grandpa: GrandpaId,
-    im_online: ImOnlineId,
-    authority_discovery: AuthorityDiscoveryId,
-    beefy: BeefyId,
-) -> SessionKeys {
-    SessionKeys {
-        babe,
-        grandpa,
-        im_online,
-        authority_discovery,
-        beefy,
     }
 }
 

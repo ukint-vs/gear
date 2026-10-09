@@ -311,13 +311,13 @@ impl<B: Block, AuthorityId: AuthorityIdBound> OnDemandJustificationsEngine<B, Au
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{justification::tests::new_finality_proof, tests::make_beefy_ids};
     use futures::{
         channel::mpsc,
         task::{waker, ArcWake},
-        FutureExt,
+        Future,
     };
     use sp_consensus_beefy::{ecdsa_crypto, test_utils::Keyring};
     use std::{
@@ -328,7 +328,7 @@ mod tests {
 
     type PendingRequest = (PeerId, Vec<u8>, oneshot::Sender<Response>);
 
-    struct RequestNetwork(mpsc::UnboundedSender<PendingRequest>);
+    pub(crate) struct RequestNetwork(pub(crate) mpsc::UnboundedSender<PendingRequest>);
 
     #[async_trait::async_trait]
     impl NetworkRequest for RequestNetwork {
@@ -382,53 +382,53 @@ mod tests {
         let task_waker = waker(wakes.clone());
         let mut cx = Context::from_waker(&task_waker);
         engine.request(5, active_set.clone());
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         assert!(requests_rx.try_next().is_err());
 
         let peer = PeerId::random();
         known_peers.lock().note_vote_for(peer, 5);
         assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         assert!(requests_rx.try_next().is_err());
         known_peers.lock().note_vote_for(peer, 20);
         assert_eq!(wakes.0.load(Ordering::Relaxed), 2);
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         let (requested_peer, request, response) = requests_rx.try_next().unwrap().unwrap();
         assert_eq!(requested_peer, peer);
         assert_eq!(request, JustificationRequest::<Block> { begin: 5 }.encode());
         response.send(Ok((vec![0xff], protocol.clone()))).unwrap();
         assert!(matches!(
-            engine.next().boxed().as_mut().poll(&mut cx),
+            std::pin::pin!(engine.next()).poll(&mut cx),
             Poll::Ready(ResponseInfo::PeerReport(_))
         ));
 
         // Exhaustion retains the target; repeated hints and worker requests do not retry it.
         engine.request(5, active_set.clone());
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         let before_duplicate = wakes.0.load(Ordering::Relaxed);
         known_peers.lock().note_vote_for(peer, 20);
         assert_eq!(wakes.0.load(Ordering::Relaxed), before_duplicate);
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         assert!(requests_rx.try_next().is_err());
 
         known_peers.lock().note_vote_for(peer, 21);
         assert_eq!(wakes.0.load(Ordering::Relaxed), before_duplicate + 1);
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         let (_, request, response) = requests_rx.try_next().unwrap().unwrap();
         assert_eq!(request, JustificationRequest::<Block> { begin: 5 }.encode());
         let proof = new_finality_proof(5, &active_set, &keys);
         response.send(Ok((proof.encode(), protocol))).unwrap();
-        match engine.next().boxed().as_mut().poll(&mut cx) {
+        match std::pin::pin!(engine.next()).poll(&mut cx) {
             Poll::Ready(ResponseInfo::ValidProof(received, _)) => assert_eq!(received, proof),
             _ => panic!("the retained historical validator set must verify the response"),
         }
 
         known_peers.lock().remove(&peer);
         engine.request(10, active_set);
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         engine.cancel_requests_older_than(10);
         known_peers.lock().note_vote_for(peer, 30);
-        assert!(engine.next().boxed().as_mut().poll(&mut cx).is_pending());
+        assert!(std::pin::pin!(engine.next()).poll(&mut cx).is_pending());
         assert!(requests_rx.try_next().is_err());
     }
 }

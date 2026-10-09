@@ -77,17 +77,11 @@ Native generation uses the configured persistent keystore and seed None; its
 password affects derivation, not file encryption. Five-key generation is
 nontransactional, so a failed proof/signing request may leave unused private keys.
 
-Source activation/restart validates actual active/queued committees up to 1000,
-independently of destination binding, desired committee and dormant owners.
-The runtime adds no candidate-readiness election filter or forced chilling.
-Bridge cutover is separately approved: pause/drain/reconcile, bind once while
-paused before or after BEEFY, authenticate a signed post-binding leaf, verify the
-destination and explicitly unpause. Bound actual/queued and desired capacity is
-256; Normal unpause has a separate full-bridge allowance from the source
-Operational reservation. Runtime guards do not automatically pause or reset state
-and cannot guarantee future private signing. See the [operator contract](../beefy-deployment.md)
-and [qualification gates](../beefy-migration.md); old custom-contract snapshot/test
-counts are superseded, not current native-contract release qualification.
+Source activation allows actual active/queued committees up to **1000** independently of
+destination binding; bound actual/queued and desired capacity is **256**. Cutover requires
+separate approval; readiness guards do not automatically pause/reset state or guarantee signing.
+Follow the [operator contract](../beefy-deployment.md) and [qualification gates](../beefy-migration.md)
+for election, admission, cutover and evidence; superseded custom-contract counts do not qualify release.
 
 ## Gear Compatibility Crates
 

@@ -131,6 +131,7 @@ mod tests {
     use super::*;
     use frame_support::{
         assert_noop, assert_ok,
+        storage::{storage_prefix, unhashed},
         traits::{OnInitialize, OnRuntimeUpgrade, OneSessionHandler},
     };
     use parity_scale_codec::Encode;
@@ -438,16 +439,9 @@ mod tests {
             assert_eq!(GearEthBridge::bridge_domain(), bridge_domain);
             assert_eq!(VaraBridgeProvider::extra_data(), uninitialized_commitment.0);
 
-            for (name, value) in [
-                (b"Initialized".as_slice(), true.encode()),
-                (b"QueueId", queue_id.encode()),
-                (b"QueueMerkleRoot", root.encode()),
-            ] {
-                sp_io::storage::set(
-                    &frame_support::storage::storage_prefix(b"GearEthBridge", name),
-                    &value,
-                );
-            }
+            unhashed::put(&storage_prefix(b"GearEthBridge", b"Initialized"), &true);
+            unhashed::put(&storage_prefix(b"GearEthBridge", b"QueueId"), &queue_id);
+            unhashed::put(&storage_prefix(b"GearEthBridge", b"QueueMerkleRoot"), &root);
             assert_eq!(GearEthBridge::bridge_snapshot(), Some((queue_id, root)));
             assert_eq!(VaraBridgeProvider::extra_data(), commitment.0);
         });

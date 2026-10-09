@@ -95,13 +95,13 @@ fn ecdsa_rejects_high_s_and_invalid_scalars_only_for_possession() {
     assert!(RuntimePublic::verify(&public, &statement, &high_s));
 
     for scalar in [0..32, 32..64] {
-        let mut invalid = pair.sign(&statement);
+        let mut invalid = proof;
         invalid.0[scalar.clone()].fill(0);
         assert!(!public.verify_proof_of_possession(&owner, &invalid));
         invalid.0[scalar].fill(0xff);
         assert!(!public.verify_proof_of_possession(&owner, &invalid));
     }
-    let mut invalid_recovery = pair.sign(&statement);
+    let mut invalid_recovery = proof;
     invalid_recovery.0[64] = 255;
     assert!(!public.verify_proof_of_possession(&owner, &invalid_recovery));
 

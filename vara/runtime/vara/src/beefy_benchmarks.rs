@@ -485,7 +485,7 @@ benchmarks! {
         let validators = n.min(crate::MaxActiveValidators::get()) as usize;
         let active = &legacy[..validators];
         let queued = &legacy[legacy.len() - validators..];
-        frame_support::storage::unhashed::put(&pallet_session::QueuedKeys::<Runtime>::hashed_key(), &queued.to_vec());
+        frame_support::storage::unhashed::put(&pallet_session::QueuedKeys::<Runtime>::hashed_key(), queued);
         // Seed actual four-key active handlers, preserving potentially different queued keys.
         for (pallet, item) in [(b"Babe".as_slice(), b"Authorities".as_slice()), (b"Grandpa", b"Authorities"), (b"ImOnline", b"Keys"), (b"AuthorityDiscovery", b"Keys")] {
             sp_io::storage::clear(&frame_support::storage::storage_prefix(pallet, item));

@@ -414,10 +414,8 @@ impl pallet_transaction_payment::Config for Runtime {
 
 // **IMPORTANT**: update this value with care, GearEthBridge is sensitive to this.
 //
-// Appending `beefy` changes the SCALE encoding of every already-stored `NextKeys`/
-// `QueuedKeys` entry (4 fixed-size keys -> 5). Deploying this on a live chain with bonded
-// validators requires the `Session::upgrade_keys` migration (tracked separately) run in
-// the *same* runtime upgrade — without it, existing validators' stored keys fail to decode.
+// Adding BEEFY changes the stored NextKeys/QueuedKeys encoding from four keys to five.
+// Run migrations::MigrateSessionKeys in the same upgrade or existing keys cannot decode.
 impl_opaque_keys! {
     pub struct SessionKeys {
         pub babe: Babe,

@@ -228,8 +228,5 @@ impl<T: RuntimeAppPublic> BoundToRuntimeAppPublic for T {
 
 /// The native possession domain, independent of chain genesis and key bundles.
 pub(crate) fn possession_statement(owner: &[u8]) -> Vec<u8> {
-    let mut statement = Vec::with_capacity(4 + owner.len());
-    statement.extend_from_slice(b"POP_");
-    statement.extend_from_slice(owner);
-    statement
+    [b"POP_".as_slice(), owner].concat()
 }

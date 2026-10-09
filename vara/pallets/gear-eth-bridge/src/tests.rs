@@ -1302,16 +1302,19 @@ fn bridge_binding_is_paused_immutable_preparation() {
                 H160::repeat_byte(1),
                 vec![1],
             ));
-            let state = (
-                Queue::get(),
-                MessageNonce::get(),
-                QueueId::<Test>::get(),
-                QueueMerkleRoot::get(),
-                QueueChanged::get(),
-                Initialized::get(),
-                Session::validators(),
-                Session::queued_keys(),
-            );
+            let snapshot = || {
+                (
+                    Queue::get(),
+                    MessageNonce::get(),
+                    QueueId::<Test>::get(),
+                    QueueMerkleRoot::get(),
+                    QueueChanged::get(),
+                    Initialized::get(),
+                    Session::validators(),
+                    Session::queued_keys(),
+                )
+            };
+            let state = snapshot();
             let genesis = H256::repeat_byte(9);
             frame_system::BlockHash::<Test>::insert(0, genesis);
             let chain_id = H256::repeat_byte(1);
@@ -1357,19 +1360,7 @@ fn bridge_binding_is_paused_immutable_preparation() {
             );
             assert_eq!(GearEthBridge::bridge_domain(), domain);
             assert!(Paused::get());
-            assert_eq!(
-                state,
-                (
-                    Queue::get(),
-                    MessageNonce::get(),
-                    QueueId::<Test>::get(),
-                    QueueMerkleRoot::get(),
-                    QueueChanged::get(),
-                    Initialized::get(),
-                    Session::validators(),
-                    Session::queued_keys(),
-                )
-            );
+            assert_eq!(state, snapshot());
             System::assert_last_event(
                 Event::DestinationBound {
                     source_genesis: genesis,
@@ -1414,14 +1405,17 @@ fn bridge_bound_admission_rejects_all_sources_without_retaining_fees() {
                 } else {
                     Error::BridgeNotReady
                 };
-                let state = (
-                    Queue::get(),
-                    MessageNonce::get(),
-                    QueueId::<Test>::get(),
-                    QueueChanged::get(),
-                    QueueMerkleRoot::get(),
-                    QueueOverflowedSince::<Test>::get(),
-                );
+                let snapshot = || {
+                    (
+                        Queue::get(),
+                        MessageNonce::get(),
+                        QueueId::<Test>::get(),
+                        QueueChanged::get(),
+                        QueueMerkleRoot::get(),
+                        QueueOverflowedSince::<Test>::get(),
+                    )
+                };
+                let state = snapshot();
                 let source_balance = balance_of(&source);
                 let builtin_balance = balance_of(&MockBridgeBuiltinAddress::get());
                 assert_noop!(
@@ -1462,17 +1456,7 @@ fn bridge_bound_admission_rejects_all_sources_without_retaining_fees() {
                     balance_of(&MockBridgeBuiltinAddress::get()),
                     builtin_balance
                 );
-                assert_eq!(
-                    state,
-                    (
-                        Queue::get(),
-                        MessageNonce::get(),
-                        QueueId::<Test>::get(),
-                        QueueChanged::get(),
-                        QueueMerkleRoot::get(),
-                        QueueOverflowedSince::<Test>::get(),
-                    )
-                );
+                assert_eq!(state, snapshot());
             });
         }
     }

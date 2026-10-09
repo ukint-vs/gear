@@ -738,7 +738,10 @@ pub(crate) mod tests {
         // nothing in cache first time
         let res = gv.validate(&mut context, &sender, &encoded);
         assert!(matches!(res, ValidationResult::ProcessAndKeep(_)));
-        assert_eq!(context.broadcast.take(), Some(encoded.clone()));
+        assert_eq!(
+            context.broadcast.take().as_deref(),
+            Some(encoded.as_slice())
+        );
         expected_report.cost_benefit = benefit::VOTE_MESSAGE;
         assert_eq!(report_stream.try_next().unwrap().unwrap(), expected_report);
         assert_eq!(known_peers.lock().further_than(0).len(), 1);
@@ -805,7 +808,10 @@ pub(crate) mod tests {
         assert!(matches!(res, ValidationResult::ProcessAndKeep(_)));
         expected_report.cost_benefit = benefit::VALIDATED_PROOF;
         assert_eq!(report_stream.try_next().unwrap().unwrap(), expected_report);
-        assert_eq!(context.broadcast.take(), Some(encoded_proof.clone()));
+        assert_eq!(
+            context.broadcast.take().as_deref(),
+            Some(encoded_proof.as_slice())
+        );
 
         // Repeated proofs are discarded without a reputation change or forwarding.
         let res = gv.validate(&mut context, &sender, &encoded_proof);
@@ -874,7 +880,10 @@ pub(crate) mod tests {
             gv.validate(&mut context, &sender, &encoded),
             ValidationResult::ProcessAndKeep(topic) if topic == proofs_topic::<Block>()
         ));
-        assert_eq!(context.broadcast.take(), Some(encoded.clone()));
+        assert_eq!(
+            context.broadcast.take().as_deref(),
+            Some(encoded.as_slice())
+        );
         assert_eq!(
             report_stream.try_next().unwrap().unwrap(),
             PeerReport {
@@ -917,47 +926,13 @@ pub(crate) mod tests {
     #[test]
     fn cold_cross_set_gossip_discovers_historical_proof_peer() {
         use crate::communication::request_response::{
-            outgoing_requests_engine::{OnDemandJustificationsEngine, ResponseInfo},
+            outgoing_requests_engine::{
+                tests::RequestNetwork, OnDemandJustificationsEngine, ResponseInfo,
+            },
             JustificationRequest,
         };
-        use futures::channel::{mpsc, oneshot};
-        use sc_network::{
-            request_responses::{IfDisconnected, RequestFailure},
-            NetworkRequest, ProtocolName,
-        };
-
-        type PendingRequest = (
-            PeerId,
-            Vec<u8>,
-            oneshot::Sender<Result<(Vec<u8>, ProtocolName), RequestFailure>>,
-        );
-        struct RequestNetwork(mpsc::UnboundedSender<PendingRequest>);
-
-        #[async_trait::async_trait]
-        impl NetworkRequest for RequestNetwork {
-            async fn request(
-                &self,
-                _: PeerId,
-                _: ProtocolName,
-                _: Vec<u8>,
-                _: Option<(Vec<u8>, ProtocolName)>,
-                _: IfDisconnected,
-            ) -> Result<(Vec<u8>, ProtocolName), RequestFailure> {
-                unimplemented!("the on-demand engine uses start_request")
-            }
-
-            fn start_request(
-                &self,
-                peer: PeerId,
-                _: ProtocolName,
-                request: Vec<u8>,
-                _: Option<(Vec<u8>, ProtocolName)>,
-                response: oneshot::Sender<Result<(Vec<u8>, ProtocolName), RequestFailure>>,
-                _: IfDisconnected,
-            ) {
-                self.0.unbounded_send((peer, request, response)).unwrap();
-            }
-        }
+        use futures::channel::mpsc;
+        use sc_network::ProtocolName;
 
         let historical_set = ValidatorSet::new(vec![Keyring::Alice.public()], 0).unwrap();
         let later_set = ValidatorSet::new(vec![Keyring::Bob.public()], 1).unwrap();

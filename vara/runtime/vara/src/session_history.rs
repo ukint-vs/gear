@@ -172,11 +172,10 @@ impl<D: AsRef<[u8]>> KeyOwnerProofSystem<(KeyTypeId, D)> for SessionKeyOwnerProo
             .with_recorder(&mut tracker)
             .build();
         let index = trie.get(&(key.0, key.1.as_ref()).encode()).ok()??;
-        let index = u32::decode_all(&mut &index[..]).ok()?;
-        if index >= count {
+        if u32::decode_all(&mut &index[..]).ok()? >= count {
             return None;
         }
-        let owner = trie.get(&index.encode()).ok()??;
+        let owner = trie.get(&index).ok()??;
         let owner = Self::IdentificationTuple::decode_all(&mut &owner[..]).ok()?;
         tracker.ensure_no_unused_nodes().ok()?;
         Some(owner)

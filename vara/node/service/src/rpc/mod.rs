@@ -103,15 +103,6 @@ struct BoundedMmr<M> {
     max_batch_size: u64,
 }
 
-impl<M> BoundedMmr<M> {
-    fn new(inner: M, max_batch_size: u64) -> Self {
-        Self {
-            inner,
-            max_batch_size,
-        }
-    }
-}
-
 impl<M> mmr_rpc::MmrApiServer<Hash, BlockNumber, Hash> for BoundedMmr<M>
 where
     M: mmr_rpc::MmrApiServer<Hash, BlockNumber, Hash> + Send + Sync + 'static,
@@ -238,15 +229,15 @@ where
 
     io.merge(System::new(client.clone(), pool).into_rpc())?;
     io.merge(
-        BoundedMmr::new(
-            mmr_rpc::Mmr::new(
+        BoundedMmr {
+            inner: mmr_rpc::Mmr::new(
                 client.clone(),
                 backend
                     .offchain_storage()
                     .ok_or("Backend doesn't provide an offchain storage")?,
             ),
             max_batch_size,
-        )
+        }
         .into_rpc(),
     )?;
     io.merge(TransactionPayment::new(client.clone()).into_rpc())?;
@@ -366,7 +357,10 @@ mod tests {
     #[test]
     fn mmr_proof_batch_limit_rejects_before_delegating() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let rpc = BoundedMmr::new(CountingMmr(calls.clone()), 2);
+        let rpc = BoundedMmr {
+            inner: CountingMmr(calls.clone()),
+            max_batch_size: 2,
+        };
 
         assert!(rpc.generate_proof(vec![1, 2], None, None).is_ok());
         assert_eq!(calls.load(Ordering::Relaxed), 1);

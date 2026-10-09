@@ -5,15 +5,13 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-function run(script, argv) {
-  return spawnSync(process.execPath, [fileURLToPath(new URL(script, import.meta.url)), ...argv],
-    { encoding: 'utf8', timeout: 10_000 });
-}
 
 test('live smoke rejects public URLs and ambiguous hosts before opening RPC', () => {
+  const scriptPath = fileURLToPath(new URL('beefy-activation-smoke.mjs', import.meta.url));
   for (const url of ['wss://rpc.vara.network', 'ws://example.com', 'ws://localhost:9944',
     'ws://127.0.0.1.example.com', 'http://127.0.0.1:9944', 'ws://user:password@127.0.0.1:9944']) {
-    const result = run('beefy-activation-smoke.mjs', [url, 'ws://127.0.0.1:9945']);
+    const result = spawnSync(process.execPath, [scriptPath, url, 'ws://127.0.0.1:9945'],
+      { encoding: 'utf8', timeout: 10_000 });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Never run this test against a public node/);
     assert.equal(result.stdout, '');
